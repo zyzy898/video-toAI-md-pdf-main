@@ -1,0 +1,20 @@
+# 视频转文档 - Python 依赖
+
+# 核心依赖
+flask>=2.0.0
+werkzeug>=2.0.0
+
+# AI 分析
+volcengine-python-sdk[ark]>=1.0.0
+python-dotenv>=0.19.0
+
+# 视频处理
+openai-whisper>=20231117
+ffmpeg-python>=0.2.0
+
+# 文档生成
+markdown>=3.4.0
+fpdf2>=2.5.0
+
+# 可选：增强功能
+# Pillow>=9.0.0  # 图片处理（如需额外图像操作）

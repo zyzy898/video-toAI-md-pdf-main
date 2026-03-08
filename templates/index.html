@@ -1,0 +1,1117 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>视频转文档 - AI 视频总结</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+        rel="stylesheet">
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+
+    <link rel="stylesheet" href="./main.css">
+</head>
+
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-icon">
+                <i data-lucide="video"></i>
+            </div>
+            <h1>视频转文档</h1>
+            <p>AI 自动分析视频，生成带截图的分步骤总结文档</p>
+        </header>
+
+        <!-- Main Grid -->
+        <div class="main-grid">
+            <!-- Sidebar -->
+            <div class="sidebar">
+                <div class="card">
+                    <div class="card-header">
+                        <i data-lucide="settings"></i>
+                        <h2>配置选项</h2>
+                    </div>
+                    <div class="card-body">
+                        <div class="form-group">
+                            <label class="form-label">
+                                <span class="required">*</span>火山引擎 ARK API Key
+                            </label>
+                            <input type="password" class="form-input" id="api_key" placeholder="ARK API Key" required>
+                            <span class="form-hint">目前仅支持 doubao-seed-2-0-pro-260215</span>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label">Whisper 字幕识别模型</label>
+                            <select class="form-select" id="whisper_model">
+                                <option value="tiny">tiny - 最快，最低精度</option>
+                                <option value="base" selected>base - 快速，中等精度</option>
+                                <option value="small">small - 中等，较好精度</option>
+                                <option value="medium">medium - 较慢，高精度</option>
+                                <option value="large">large - 最慢，最高精度</option>
+                            </select>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label">AI 看图增强次数</label>
+                            <input type="number" class="form-input" id="max_vision" value="10" min="0" max="10">
+                            <span class="form-hint">对低自信度步骤进行 AI 看图增强 (0-10次)</span>
+                        </div>
+
+                        <div class="form-group" id="fps-group">
+                            <label class="form-label">抽帧频率 (FPS)</label>
+                            <div> 
+                                <input type="number" class="form-input" id="fps" style="display: block;width: 100%;" value="1" min="0.1" max="10"
+                                    step="0.1">
+                            </div>
+                            <div>
+                                <span class="form-hint">视频上传模式下的抽帧频率，默认 1 帧/秒</span>
+                            </div>
+
+                        </div>
+
+                        <label class="checkbox-group">
+                            <input type="checkbox" id="use_video">
+                            <div class="checkbox-label">
+                                <strong>视频上传模式</strong>
+                                <span>直接上传视频给 AI 看（更准确，费用较高）</span>
+                            </div>
+                        </label>
+
+                        <label class="checkbox-group">
+                            <input type="checkbox" id="web_search">
+                            <div class="checkbox-label">
+                                <strong>联网搜索增强</strong>
+                                <span>自动搜索相关信息，丰富文档内容(需提前开通)</span>
+                            </div>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- History Card -->
+                <div class="card history-card">
+                    <div class="card-header">
+                        <i data-lucide="history"></i>
+                        <h2>历史记录</h2>
+                    </div>
+                    <div class="card-body">
+                        <div class="history-list" id="history-list">
+                            <div class="history-empty">暂无历史记录</div>
+                        </div>
+                        <button class="btn btn-secondary btn-sm history-refresh" id="refresh-history">
+                            <i data-lucide="refresh-cw" class="refresh-icon"></i>
+                            刷新
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Content -->
+            <div class="content-area">
+                <!-- Upload -->
+                <div class="card">
+                    <div class="card-header">
+                        <i data-lucide="upload"></i>
+                        <h2>上传视频</h2>
+                    </div>
+                    <div class="card-body">
+                        <div class="batch-toggle">
+                            <button class="batch-toggle-btn active" id="single-mode-btn">
+                                <i data-lucide="file-video"></i> 单文件
+                            </button>
+                            <button class="batch-toggle-btn" id="batch-mode-btn">
+                                <i data-lucide="files"></i> 批量上传
+                            </button>
+                        </div>
+
+                        <div class="upload-area" id="upload-area">
+                            <input type="file" id="file_input" accept="video/*">
+                            <div class="upload-icon">
+                                <i data-lucide="cloud-upload"></i>
+                            </div>
+                            <h3>点击或拖拽视频文件到这里</h3>
+                            <p>支持 MP4, AVI, MOV, MKV, WMV, FLV, WebM, M4V 等格式</p>
+                            <div class="file-badge hidden" id="file-badge">
+                                <i data-lucide="file-video"></i>
+                                <span id="filename"></span>
+                            </div>
+                        </div>
+
+                        <!-- Batch Upload Area -->
+                        <div class="batch-area hidden" id="batch-area">
+                            <input type="file" id="batch_file_input" accept="video/*" multiple style="display:none;">
+                            <div class="upload-area" id="batch-upload-area">
+                                <div class="upload-icon" style="width:56px;height:56px;">
+                                    <i data-lucide="folder-plus"></i>
+                                </div>
+                                <h3>点击选择多个视频文件</h3>
+                                <p>支持 MP4, AVI, MOV, MKV, WMV, FLV, WebM, M4V 等格式</p>
+                            </div>
+                            <div class="batch-file-list hidden" id="batch-file-list"></div>
+                            <button class="btn btn-secondary hidden" id="clear-batch-btn"
+                                style="width:100%;margin-top:0.5rem;">
+                                <i data-lucide="x"></i> 清空列表
+                            </button>
+                        </div>
+
+                        <button class="btn btn-primary btn-lg" id="analyze-btn" disabled
+                            style="width: 100%; margin-top: 1.5rem;">
+                            <i data-lucide="play"></i>
+                            <span id="analyze-btn-text">开始分析</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Results -->
+                <div class="results-grid hidden" id="results-area">
+                    <!-- Batch Results (for batch mode) -->
+                    <div class="card hidden" id="batch-results-area" style="grid-column: 1 / -1;">
+                        <div class="card-header" style="justify-content: space-between;">
+                            <div style="display: flex; align-items: center; gap: 0.75rem;">
+                                <i data-lucide="layers"></i>
+                                <h2>批量处理结果</h2>
+                            </div>
+                            <div style="display: flex; gap: 0.5rem;">
+                                <button class="btn btn-primary btn-sm" id="download-batch-zip-btn">
+                                    <i data-lucide="download"></i>
+                                    下载全部总结文档 (ZIP)
+                                </button>
+                            </div>
+                        </div>
+                        <div class="card-body results-panel">
+                            <div class="batch-result-summary" id="batch-result-summary"></div>
+                            <div class="batch-results" id="batch-results"></div>
+                        </div>
+                    </div>
+
+                    <!-- Steps Panel -->
+                    <div class="card">
+                        <div class="card-header" style="justify-content: space-between;">
+                            <div style="display: flex; align-items: center; gap: 0.75rem;">
+                                <i data-lucide="list-ordered"></i>
+                                <h2>识别到的步骤</h2>
+                            </div>
+                            <div style="display: flex; gap: 0.5rem;">
+                                <button class="btn btn-secondary btn-sm" id="edit-steps-btn">
+                                    <i data-lucide="edit-2"></i>
+                                    编辑
+                                </button>
+                            </div>
+                        </div>
+                        <div class="card-body results-panel" id="steps-container">
+                        </div>
+                        <!-- Edit Mode Container -->
+                        <div class="card-body hidden" id="steps-edit-container"
+                            style="max-height: 500px; overflow-y: auto;">
+                            <div class="edit-actions-bar">
+                                <button class="btn btn-primary btn-sm" id="save-steps-btn">
+                                    <i data-lucide="check"></i>
+                                    保存并重新生成
+                                </button>
+                                <button class="btn btn-secondary btn-sm" id="cancel-edit-btn">
+                                    <i data-lucide="x"></i>
+                                    取消
+                                </button>
+                            </div>
+                            <div id="steps-edit-list"></div>
+                            <button class="step-add-btn" id="add-step-btn">
+                                <i data-lucide="plus"></i>
+                                添加新步骤
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Document Panel -->
+                    <div class="card" id="document-panel">
+                        <div class="card-header" style="justify-content: space-between;">
+                            <div style="display: flex; align-items: center; gap: 0.75rem;">
+                                <i data-lucide="file-text"></i>
+                                <h2>生成的总结文档</h2>
+                            </div>
+                            <div style="display: flex; gap: 0.5rem;">
+                                <button class="btn btn-primary btn-sm" id="download-zip-btn">
+                                    <svg t="1772791575627" class="icon" viewBox="0 0 1024 1024" version="1.1"
+                                        xmlns="http://www.w3.org/2000/svg" p-id="781" width="18" height="18"
+                                        style="color: var(--primary-foreground);">
+                                        <path
+                                            d="M483.328 746.837333a44.032 44.032 0 0 0 63.488 0l254.634667-256.682666a45.056 45.056 0 1 0-63.488-63.488l-187.050667 185.344V182.272c0-27.306667-12.970667-45.738667-38.912-45.738667a43.008 43.008 0 0 0-45.397333 45.397334v429.738666L283.306667 426.325333a55.978667 55.978667 0 0 0-63.488 9.216 44.032 44.032 0 0 0 0 63.488z m359.424 68.266667H181.248c-27.306667 0-45.397333 7.509333-45.397333 34.133333s18.090667 40.618667 45.397333 40.618667h661.504c27.306667 0 45.397333-13.312 45.397333-40.618667s-18.090667-33.792-45.397333-33.792z"
+                                            fill="currentColor" p-id="9758"></path>
+                                    </svg>
+                                    下载完整总结文档包 (ZIP)
+                                </button>
+                            </div>
+                        </div>
+                        <div class="card-body results-panel">
+                            <div class="markdown-content" id="markdown-container">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Progress Overlay -->
+    <div class="progress-overlay" id="progress-overlay">
+        <div class="progress-card">
+            <div class="progress-spinner"></div>
+            <h3 id="progress-title">正在处理...</h3>
+            <p id="progress-text">请稍候</p>
+        </div>
+    </div>
+
+    <!-- Error Toast -->
+    <div class="error-toast" id="error-toast">
+        <i data-lucide="alert-circle"></i>
+        <span id="error-message"></span>
+    </div>
+
+    <script>
+        lucide.createIcons();
+
+        let currentFile = null;
+        let currentFilepath = null;
+        let resultData = null;
+
+        // Batch processing
+        let isBatchMode = false;
+        let batchFiles = [];
+        let batchFilepaths = [];
+
+        // FPS visibility control
+        const useVideoCheckbox = document.getElementById('use_video');
+        const fpsGroup = document.getElementById('fps-group');
+
+        useVideoCheckbox.addEventListener('change', () => {
+            if (useVideoCheckbox.checked) {
+                fpsGroup.classList.add('visible');
+            } else {
+                fpsGroup.classList.remove('visible');
+            }
+        });
+
+        const uploadArea = document.getElementById('upload-area');
+        const batchArea = document.getElementById('batch-area');
+        const singleModeBtn = document.getElementById('single-mode-btn');
+        const batchModeBtn = document.getElementById('batch-mode-btn');
+        const batchUploadArea = document.getElementById('batch-upload-area');
+        const batchFileInput = document.getElementById('batch_file_input');
+        const batchFileList = document.getElementById('batch-file-list');
+        const clearBatchBtn = document.getElementById('clear-batch-btn');
+        const analyzeBtnText = document.getElementById('analyze-btn-text');
+        const batchResultsArea = document.getElementById('batch-results-area');
+        const batchResults = document.getElementById('batch-results');
+        const batchResultSummary = document.getElementById('batch-result-summary');
+        const downloadBatchZipBtn = document.getElementById('download-batch-zip-btn');
+
+        // Mode toggle
+        singleModeBtn.addEventListener('click', () => {
+            isBatchMode = false;
+            singleModeBtn.classList.add('active');
+            batchModeBtn.classList.remove('active');
+            uploadArea.classList.remove('hidden');
+            batchArea.classList.add('hidden');
+            analyzeBtnText.textContent = '开始分析';
+            analyzeBtn.disabled = !currentFilepath;
+        });
+
+        batchModeBtn.addEventListener('click', () => {
+            isBatchMode = true;
+            batchModeBtn.classList.add('active');
+            singleModeBtn.classList.remove('active');
+            uploadArea.classList.add('hidden');
+            batchArea.classList.remove('hidden');
+            analyzeBtnText.textContent = '开始批量分析';
+            analyzeBtn.disabled = batchFiles.length === 0;
+        });
+
+        // Batch file input
+        batchUploadArea.addEventListener('click', () => batchFileInput.click());
+
+        batchUploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            batchUploadArea.classList.add('dragover');
+        });
+
+        batchUploadArea.addEventListener('dragleave', () => {
+            batchUploadArea.classList.remove('dragover');
+        });
+
+        batchUploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            batchUploadArea.classList.remove('dragover');
+            handleBatchFiles(e.dataTransfer.files);
+        });
+
+        batchFileInput.addEventListener('change', (e) => {
+            handleBatchFiles(e.target.files);
+        });
+
+        clearBatchBtn.addEventListener('click', () => {
+            batchFiles = [];
+            batchFilepaths = [];
+            renderBatchFileList();
+            analyzeBtn.disabled = true;
+        });
+
+        async function handleBatchFiles(files) {
+            if (files.length === 0) return;
+
+            const validExtensions = ['mp4', 'avi', 'mov', 'mkv', 'wmv', 'flv', 'webm', 'm4v', 'mpg', 'mpeg', '3gp', 'ts', 'm2ts'];
+            const validFiles = Array.from(files).filter(f => {
+                const ext = f.name.split('.').pop().toLowerCase();
+                return validExtensions.includes(ext);
+            });
+
+            if (validFiles.length === 0) {
+                showError('没有有效的视频文件');
+                return;
+            }
+
+            showProgress('上传文件中', `正在上传 ${validFiles.length} 个文件...`);
+
+            try {
+                const formData = new FormData();
+                validFiles.forEach(f => formData.append('files', f));
+
+                const response = await fetch('/upload_batch', { method: 'POST', body: formData });
+                const data = await response.json();
+
+                if (data.error) throw new Error(data.error);
+
+                batchFiles = validFiles;
+                batchFilepaths = data.uploaded.map(f => f.filepath);
+
+                renderBatchFileList();
+                analyzeBtn.disabled = false;
+                hideProgress();
+                showProgress('上传成功', `已上传 ${data.uploaded.length} 个文件`);
+                setTimeout(hideProgress, 1500);
+            } catch (error) {
+                hideProgress();
+                showError('上传失败: ' + error.message);
+            }
+        }
+
+        function renderBatchFileList() {
+            if (batchFiles.length === 0) {
+                batchFileList.classList.add('hidden');
+                clearBatchBtn.classList.add('hidden');
+                return;
+            }
+
+            batchFileList.classList.remove('hidden');
+            clearBatchBtn.classList.remove('hidden');
+
+            batchFileList.innerHTML = batchFiles.map((file, idx) => `
+                <div class="batch-file-item">
+                    <div class="batch-file-name">
+                        <i data-lucide="file-video" style="width:16px;height:16px;color:var(--primary);"></i>
+                        <span>${file.name}</span>
+                    </div>
+                    <span class="batch-file-status pending">待处理</span>
+                </div>
+            `).join('');
+
+            lucide.createIcons();
+        }
+        const fileInput = document.getElementById('file_input');
+        const fileBadge = document.getElementById('file-badge');
+        const filenameEl = document.getElementById('filename');
+        const analyzeBtn = document.getElementById('analyze-btn');
+        const progressOverlay = document.getElementById('progress-overlay');
+        const progressTitle = document.getElementById('progress-title');
+        const progressText = document.getElementById('progress-text');
+        const resultsArea = document.getElementById('results-area');
+        const stepsContainer = document.getElementById('steps-container');
+        const markdownContainer = document.getElementById('markdown-container');
+        const errorToast = document.getElementById('error-toast');
+        const errorMessage = document.getElementById('error-message');
+        const downloadZipBtn = document.getElementById('download-zip-btn');
+
+        // 文件上传事件绑定
+        uploadArea.addEventListener('click', () => fileInput.click());
+
+        uploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadArea.classList.add('dragover');
+        });
+
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.classList.remove('dragover');
+        });
+
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadArea.classList.remove('dragover');
+            const files = e.dataTransfer.files;
+            if (files.length > 0) handleFile(files[0]);
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) handleFile(e.target.files[0]);
+        });
+
+        // 处理文件上传
+        async function handleFile(file) {
+            currentFile = file;
+            filenameEl.textContent = file.name;
+            fileBadge.classList.remove('hidden');
+            uploadArea.classList.add('has-file');
+            analyzeBtn.disabled = false;
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            showProgress('上传文件中', '请稍候...');
+
+            try {
+                const response = await fetch('/upload', { method: 'POST', body: formData });
+                const data = await response.json();
+
+                if (data.error) throw new Error(data.error);
+
+                currentFilepath = data.filepath;
+                hideProgress();
+                showProgress('上传成功', '点击"开始分析"继续');
+                setTimeout(hideProgress, 1500);
+            } catch (error) {
+                hideProgress();
+                showError('上传失败: ' + error.message);
+            }
+        }
+
+        // 开始分析按钮
+        analyzeBtn.addEventListener('click', async () => {
+            const apiKey = document.getElementById('api_key').value.trim();
+            if (!apiKey) { showError('请输入 API Key'); return; }
+
+            if (isBatchMode) {
+                // Batch analysis
+                if (batchFilepaths.length === 0) return;
+
+                const whisperModel = document.getElementById('whisper_model').value;
+                const maxVision = document.getElementById('max_vision').value;
+                const fps = document.getElementById('fps').value;
+                const useVideo = document.getElementById('use_video').checked;
+                const webSearch = document.getElementById('web_search').checked;
+
+                analyzeBtn.disabled = true;
+                showProgress('批量处理中', `正在处理第 1/${batchFilepaths.length} 个视频...`);
+
+                // Update file status to processing
+                document.querySelectorAll('.batch-file-item').forEach(item => {
+                    item.classList.remove('pending');
+                    item.classList.add('processing');
+                    const status = item.querySelector('.batch-file-status');
+                    if (status) {
+                        status.classList.remove('pending');
+                        status.classList.add('processing');
+                        status.textContent = '处理中';
+                    }
+                });
+
+                let progressPollInterval = null;
+
+                // Start polling for progress updates
+                progressPollInterval = setInterval(async () => {
+                    try {
+                        const response = await fetch('/batch_progress');
+                        const progress = await response.json();
+
+                        if (progress.status === 'processing' && progress.current > 0) {
+                            progressText.textContent = `正在处理第 ${progress.current}/${progress.total} 个视频: ${progress.current_file}`;
+                        }
+                    } catch (e) {
+                        console.error('Failed to fetch progress:', e);
+                    }
+                }, 5000);
+
+                try {
+                    const response = await fetch('/analyze_batch', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            filepaths: batchFilepaths,
+                            api_key: apiKey,
+                            whisper_model: whisperModel,
+                            max_vision: maxVision,
+                            fps: fps,
+                            use_video: useVideo,
+                            web_search: webSearch
+                        })
+                    });
+
+                    const data = await response.json();
+                    if (data.error) throw new Error(data.error);
+
+                    // Clear progress polling
+                    if (progressPollInterval) {
+                        clearInterval(progressPollInterval);
+                    }
+
+                    displayBatchResults(data);
+                    loadHistory();
+                    hideProgress();
+                } catch (error) {
+                    // Clear progress polling
+                    if (progressPollInterval) {
+                        clearInterval(progressPollInterval);
+                    }
+                    hideProgress();
+                    if (error.message.includes('ToolNotOpen') || error.message.includes('web search')) {
+                        showError('联网搜索功能未开通，请在火山引擎控制台开通');
+                        document.getElementById('web_search').checked = false;
+                    } else {
+                        showError('批量处理失败: ' + error.message);
+                    }
+                } finally {
+                    analyzeBtn.disabled = false;
+                }
+            } else {
+                // Single file analysis
+                if (!currentFilepath) return;
+
+                const whisperModel = document.getElementById('whisper_model').value;
+                const maxVision = document.getElementById('max_vision').value;
+                const fps = document.getElementById('fps').value;
+                const useVideo = document.getElementById('use_video').checked;
+                const webSearch = document.getElementById('web_search').checked;
+
+                analyzeBtn.disabled = true;
+                showProgress('正在分析视频', 'AI 正在识别步骤总结文档...');
+
+                try {
+                    const response = await fetch('/analyze', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            filepath: currentFilepath,
+                            api_key: apiKey,
+                            whisper_model: whisperModel,
+                            max_vision: maxVision,
+                            fps: fps,
+                            use_video: useVideo,
+                            web_search: webSearch
+                        })
+                    });
+
+                    const data = await response.json();
+                    if (data.error) throw new Error(data.error);
+
+                    resultData = data;
+                    displayResults(data);
+                    loadHistory();
+                    hideProgress();
+                } catch (error) {
+                    hideProgress();
+                    if (error.message.includes('ToolNotOpen') || error.message.includes('web search')) {
+                        showError('联网搜索功能未开通，请在火山引擎控制台开通：https://console.volcengine.com/common-buy/CC_content_plugin');
+                        document.getElementById('web_search').checked = false;
+                    } else {
+                        showError('分析失败: ' + error.message);
+                    }
+                } finally {
+                    analyzeBtn.disabled = false;
+                }
+            }
+        });
+
+        downloadZipBtn.addEventListener('click', () => {
+            if (!resultData) return;
+            const outputDir = resultData.output_dir.split(/[/\\]/).pop();
+            window.location.href = '/download_zip/' + outputDir;
+        });
+
+        downloadBatchZipBtn.addEventListener('click', async () => {
+            if (!batchResultData) return;
+            const outputDirs = batchResultData.results
+                .filter(r => r.success)
+                .map(r => r.output_dir.split(/[/\\]/).pop());
+
+            if (outputDirs.length === 0) {
+                showError('没有可下载的结果');
+                return;
+            }
+
+            try {
+                const response = await fetch('/download_batch_zip', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ output_dirs: outputDirs })
+                });
+
+                if (!response.ok) throw new Error('下载失败');
+
+                const blob = await response.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'batch_results.zip';
+                a.click();
+                window.URL.revokeObjectURL(url);
+            } catch (error) {
+                showError('下载失败: ' + error.message);
+            }
+        });
+
+        let batchResultData = null;
+
+        function displayBatchResults(data) {
+            batchResultData = data;
+
+            // Check if any result has web search error
+            const hasWebSearchError = data.results.some(r => 
+                !r.success && r.error && (r.error.includes('ToolNotOpen') || r.error.includes('web search') || r.error.includes('联网搜索'))
+            );
+            if (hasWebSearchError) {
+                document.getElementById('web_search').checked = false;
+            }
+
+            // Update batch file list status
+            const fileItems = document.querySelectorAll('.batch-file-item');
+            data.results.forEach((result, idx) => {
+                if (fileItems[idx]) {
+                    fileItems[idx].classList.remove('processing', 'pending');
+                    fileItems[idx].classList.add(result.success ? 'success' : 'failed');
+                    const status = fileItems[idx].querySelector('.batch-file-status');
+                    if (status) {
+                        status.classList.remove('processing', 'pending');
+                        status.classList.add(result.success ? 'success' : 'failed');
+                        status.textContent = result.success ? '已完成' : '失败';
+                    }
+                }
+            });
+
+            const summary = data.summary;
+            batchResultSummary.innerHTML = `
+                <div>总计: <span>${summary.total}</span> 个视频</div>
+                <div>成功: <span style="color:oklch(0.4 0.15 145)">${summary.success}</span> 个</div>
+                <div>失败: <span style="color:oklch(0.5 0.15 25)">${summary.failed}</span> 个</div>
+            `;
+
+            if (data.results.length === 0) {
+                batchResults.innerHTML = '<div class="batch-empty">没有处理结果</div>';
+            } else {
+                batchResults.innerHTML = data.results.map(result => `
+                    <div class="batch-result-item ${result.success ? 'success' : 'failed'}">
+                        <div class="batch-result-header">
+                            <span class="batch-result-title">${result.filename}</span>
+                            <span class="batch-file-status ${result.success ? 'success' : 'failed'}">
+                                ${result.success ? '✓ 成功' : '✗ 失败'}
+                            </span>
+                        </div>
+                        ${result.success ? `
+                            <p style="font-size:0.85rem;color:var(--muted-foreground);margin-bottom:0.5rem;">
+                                识别到 ${result.steps_count} 个步骤
+                            </p>
+                            <div style="display:flex;gap:0.5rem;">
+                                <a href="/download_zip/${result.output_dir.split(/[/\\]/).pop()}" 
+                                   class="btn btn-secondary btn-sm">
+                                    <i data-lucide="download"></i> 下载
+                                </a>
+                            </div>
+                        ` : `
+                            <p style="font-size:0.85rem;color:#dc2626;">${result.error}</p>
+                        `}
+                    </div>
+                `).join('');
+            }
+
+            resultsArea.classList.remove('hidden');
+            batchResultsArea.classList.remove('hidden');
+            stepsContainer.parentElement.classList.add('hidden');
+            markdownContainer.parentElement.classList.add('hidden');
+            document.getElementById('document-panel').classList.add('hidden');
+
+            lucide.createIcons();
+        }
+
+        function showProgress(title, text) {
+            progressTitle.textContent = title;
+            progressText.textContent = text;
+            progressOverlay.classList.add('active');
+        }
+
+        function hideProgress() {
+            progressOverlay.classList.remove('active');
+        }
+
+        function showError(message) {
+            errorMessage.textContent = message;
+            errorToast.classList.add('show');
+            setTimeout(() => errorToast.classList.remove('show'), 5000);
+        }
+
+        function displayResults(data) {
+            console.log('displayResults called', data);
+
+            batchResultsArea.classList.add('hidden');
+            stepsContainer.parentElement.classList.remove('hidden');
+            markdownContainer.parentElement.classList.remove('hidden');
+            document.getElementById('document-panel').classList.remove('hidden');
+
+            if (!data.steps || data.steps.length === 0) {
+                stepsContainer.innerHTML = '<div class="empty-state"><p>未识别到操作步骤</p></div>';
+            } else {
+                stepsContainer.innerHTML = '';
+                data.steps.forEach(step => {
+                    const conf = step.confidence;
+                    let confClass = '', confText = '';
+                    if (conf !== undefined && conf !== null) {
+                        if (conf >= 0.7) { confClass = 'confidence-high'; confText = '高'; }
+                        else if (conf >= 0.4) { confClass = 'confidence-medium'; confText = '中'; }
+                        else { confClass = 'confidence-low'; confText = '低'; }
+                    }
+
+                    const stepHtml = `
+                        <div class="step-item">
+                            <div class="step-header">
+                                <span class="step-number">${step.step || 1}</span>
+                                <span class="step-title">${step.title || '未命名步骤'}</span>
+                                <span class="step-time">${step.time || '00:00'}</span>
+                                ${conf !== undefined && conf !== null ? `<span class="confidence-badge ${confClass}">${confText} ${conf.toFixed(1)}</span>` : ''}
+                            </div>
+                            <p class="step-description">${step.description || ''}</p>
+                        </div>
+                    `;
+                    stepsContainer.innerHTML += stepHtml;
+                });
+            }
+
+            const baseUrl = '/output/' + data.output_dir.split(/[/\\]/).pop() + '/';
+            const processedMarkdown = data.markdown.replace(/!\[(.*?)\]\((images\/.*?)\)/g,
+                (match, alt, path) => `![${alt}](${baseUrl}${path})`);
+            markdownContainer.innerHTML = parseMarkdown(processedMarkdown);
+
+            resultsArea.classList.remove('hidden');
+            resultsArea.style.animation = 'fadeInUp 0.4s ease';
+        }
+
+        function parseMarkdown(text) {
+            text = text.replace(/!\[(.*?)\]\((.*?)\)/g, '<img src="$2" alt="$1">');
+            text = text.replace(/^### (.*$)/gim, '<h3>$1</h3>');
+            text = text.replace(/^## (.*$)/gim, '<h2>$1</h2>');
+            text = text.replace(/^# (.*$)/gim, '<h1>$1</h1>');
+            text = text.replace(/\*\*(.*?)\*\*/gim, '<strong>$1</strong>');
+            text = text.replace(/\*(.*?)\*/gim, '<em>$1</em>');
+            text = text.replace(/`([^`]+)`/gim, '<code>$1</code>');
+            text = text.replace(/\n/gim, '<br>');
+            return text;
+        }
+
+        // History
+        const historyList = document.getElementById('history-list');
+        const refreshHistoryBtn = document.getElementById('refresh-history');
+
+        async function loadHistory() {
+            try {
+                const response = await fetch('/history');
+                const data = await response.json();
+
+                if (!data.history || data.history.length === 0) {
+                    historyList.innerHTML = '<div class="history-empty">暂无历史记录</div>';
+                    return;
+                }
+
+                historyList.innerHTML = '';
+                data.history.forEach(record => {
+                    const badgeClass = record.mode === 'video' ? 'history-badge-video' : 'history-badge-subtitle';
+                    const badgeText = record.mode === 'video' ? '视频模式' : '字幕模式';
+
+                    const item = document.createElement('div');
+                    item.className = 'history-item';
+                    item.innerHTML = `
+                        <div class="history-header">
+                            <span class="history-title" title="${record.video_name}">${record.video_name}</span>
+                            <button class="history-delete" data-id="${record.id}" title="删除">
+                                <i data-lucide="trash-2" style="width:14px;height:14px;"></i>
+                            </button>
+                        </div>
+                        <div class="history-meta">
+                            <span class="history-badge ${badgeClass}">${badgeText}</span>
+                            <span>${record.steps_count} 步骤</span>
+                            <span>${record.timestamp}</span>
+                        </div>
+                    `;
+
+                    item.addEventListener('click', (e) => {
+                        if (e.target.closest('.history-delete')) return;
+                        loadHistoryRecord(record.id);
+                    });
+
+                    historyList.appendChild(item);
+                });
+
+                lucide.createIcons();
+            } catch (error) {
+                console.error('加载历史记录失败:', error);
+            }
+        }
+
+        async function loadHistoryRecord(recordId) {
+            showProgress('加载中', '正在读取历史记录...');
+            try {
+                const response = await fetch('/history/' + recordId);
+                const data = await response.json();
+
+                if (data.error) {
+                    showError(data.error);
+                    return;
+                }
+
+                const record = data.record;
+                resultData = {
+                    steps: record.steps || [],
+                    markdown: record.markdown || '',
+                    output_dir: record.output_dir,
+                    pdf_path: record.pdf_path
+                };
+
+                displayResults(resultData);
+                hideProgress();
+            } catch (error) {
+                hideProgress();
+                showError('加载历史记录失败: ' + error.message);
+            }
+        }
+
+        async function deleteHistoryRecord(recordId, event) {
+            event.stopPropagation();
+            if (!confirm('确定要删除这条历史记录吗？')) return;
+
+            try {
+                const response = await fetch('/history/' + recordId, { method: 'DELETE' });
+                const data = await response.json();
+                if (data.success) {
+                    loadHistory();
+                }
+            } catch (error) {
+                showError('删除失败: ' + error.message);
+            }
+        }
+
+        historyList.addEventListener('click', (e) => {
+            const deleteBtn = e.target.closest('.history-delete');
+            if (deleteBtn) {
+                deleteHistoryRecord(deleteBtn.dataset.id, e);
+            }
+        });
+
+        refreshHistoryBtn.addEventListener('click', () => {
+            refreshHistoryBtn.classList.add('loading');
+            loadHistory();
+            setTimeout(() => {
+                refreshHistoryBtn.classList.remove('loading');
+            }, 500);
+        });
+
+        // Steps Edit
+        const editStepsBtn = document.getElementById('edit-steps-btn');
+        const saveStepsBtn = document.getElementById('save-steps-btn');
+        const cancelEditBtn = document.getElementById('cancel-edit-btn');
+        const addStepBtn = document.getElementById('add-step-btn');
+        const stepsEditContainer = document.getElementById('steps-edit-container');
+        const stepsEditList = document.getElementById('steps-edit-list');
+        let isEditMode = false;
+        let editedSteps = [];
+
+        editStepsBtn.addEventListener('click', () => {
+            if (!resultData || !resultData.steps) return;
+            editedSteps = JSON.parse(JSON.stringify(resultData.steps));
+            renderEditSteps();
+            stepsContainer.classList.add('hidden');
+            stepsEditContainer.classList.remove('hidden');
+            editStepsBtn.classList.add('hidden');
+            isEditMode = true;
+        });
+
+        cancelEditBtn.addEventListener('click', () => {
+            stepsEditContainer.classList.add('hidden');
+            stepsContainer.classList.remove('hidden');
+            editStepsBtn.classList.remove('hidden');
+            isEditMode = false;
+        });
+
+        addStepBtn.addEventListener('click', () => {
+            const newStep = {
+                step: editedSteps.length + 1,
+                time: "00:00",
+                title: "新步骤",
+                description: "请输入步骤描述"
+            };
+            editedSteps.push(newStep);
+            renderEditSteps();
+        });
+
+        function renderEditSteps() {
+            stepsEditList.innerHTML = '';
+            editedSteps.forEach((step, index) => {
+                const item = document.createElement('div');
+                item.className = 'step-edit-item';
+                item.draggable = true;
+                item.dataset.index = index;
+                item.innerHTML = `
+                    <div class="step-edit-header">
+                        <span class="step-drag-handle" title="拖拽调整顺序">
+                            <i data-lucide="grip-vertical" style="width:16px;height:16px;"></i>
+                        </span>
+                        <span class="step-edit-number">${step.step || index + 1}</span>
+                        <input type="text" class="step-edit-input" value="${step.title || ''}" 
+                            placeholder="步骤标题" data-field="title" data-index="${index}">
+                        <input type="text" class="step-edit-time" value="${step.time || '00:00'}" 
+                            placeholder="时间" data-field="time" data-index="${index}">
+                    </div>
+                    <textarea class="step-edit-textarea" placeholder="步骤描述" 
+                        data-field="description" data-index="${index}">${step.description || ''}</textarea>
+                    <div class="step-edit-actions">
+                        <button class="btn btn-secondary btn-sm step-edit-delete" data-index="${index}">
+                            <i data-lucide="trash-2"></i>
+                            删除
+                        </button>
+                    </div>
+                `;
+                stepsEditList.appendChild(item);
+            });
+            lucide.createIcons();
+            initDragAndDrop();
+        }
+
+        let draggedIndex = null;
+
+        function initDragAndDrop() {
+            const items = stepsEditList.querySelectorAll('.step-edit-item');
+
+            items.forEach(item => {
+                item.addEventListener('dragstart', (e) => {
+                    draggedIndex = parseInt(item.dataset.index);
+                    item.classList.add('dragging');
+                    e.dataTransfer.effectAllowed = 'move';
+                    e.dataTransfer.setDragImage(item, 0, 0);
+
+                    setTimeout(() => {
+                        item.style.opacity = '0.4';
+                    }, 0);
+                });
+
+                item.addEventListener('dragend', () => {
+                    setTimeout(() => {
+                        item.style.opacity = '1';
+                    }, 0);
+                    item.classList.remove('dragging');
+                    items.forEach(i => {
+                        i.classList.remove('drag-over');
+                        i.style.transform = '';
+                    });
+                    draggedIndex = null;
+                });
+
+                item.addEventListener('dragover', (e) => {
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = 'move';
+
+                    if (!item.classList.contains('dragging')) {
+                        const rect = item.getBoundingClientRect();
+                        const midY = rect.top + rect.height / 2;
+
+                        if (e.clientY < midY) {
+                            item.classList.add('drag-over');
+                        } else {
+                            item.classList.add('drag-over');
+                        }
+                    }
+                });
+
+                item.addEventListener('dragleave', (e) => {
+                    if (!item.contains(e.relatedTarget)) {
+                        item.classList.remove('drag-over');
+                    }
+                });
+
+                item.addEventListener('drop', (e) => {
+                    e.preventDefault();
+                    item.classList.remove('drag-over');
+
+                    const dropIndex = parseInt(item.dataset.index);
+
+                    if (draggedIndex !== null && draggedIndex !== dropIndex) {
+                        const [moved] = editedSteps.splice(draggedIndex, 1);
+                        editedSteps.splice(dropIndex, 0, moved);
+                        editedSteps.forEach((step, i) => step.step = i + 1);
+                        renderEditSteps();
+                    }
+                });
+            });
+        }
+
+        stepsEditList.addEventListener('input', (e) => {
+            const field = e.target.dataset.field;
+            const index = parseInt(e.target.dataset.index);
+            if (field && !isNaN(index)) {
+                editedSteps[index][field] = e.target.value;
+            }
+        });
+
+        stepsEditList.addEventListener('click', (e) => {
+            const deleteBtn = e.target.closest('.step-edit-delete');
+            if (deleteBtn) {
+                const index = parseInt(deleteBtn.dataset.index);
+                editedSteps.splice(index, 1);
+                editedSteps.forEach((step, i) => step.step = i + 1);
+                renderEditSteps();
+            }
+        });
+
+        saveStepsBtn.addEventListener('click', async () => {
+            const apiKey = document.getElementById('api_key').value.trim();
+            if (!apiKey) { showError('请输入 API Key'); return; }
+            if (!resultData || !resultData.output_dir) return;
+
+            const webSearch = document.getElementById('web_search').checked;
+
+            saveStepsBtn.disabled = true;
+            showProgress('正在重新生成', '根据编辑后的步骤AI生成新文档...');
+
+            try {
+                const response = await fetch('/regenerate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        api_key: apiKey,
+                        steps: editedSteps,
+                        output_dir: resultData.output_dir,
+                        web_search: webSearch
+                    })
+                });
+
+                const data = await response.json();
+                if (data.error) throw new Error(data.error);
+
+                resultData = data;
+                displayResults(data);
+
+                stepsEditContainer.classList.add('hidden');
+                stepsContainer.classList.remove('hidden');
+                editStepsBtn.classList.remove('hidden');
+                isEditMode = false;
+
+                hideProgress();
+                showProgress('生成完成', '文档已重新生成');
+                setTimeout(hideProgress, 1500);
+            } catch (error) {
+                hideProgress();
+                showError('重新生成失败: ' + error.message);
+            } finally {
+                saveStepsBtn.disabled = false;
+            }
+        });
+
+        // Load history on page load
+        loadHistory();
+    </script>
+</body>
+
+</html>
