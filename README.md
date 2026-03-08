@@ -85,7 +85,7 @@ python app.py
 
 ### 3. 使用 Web 界面
 
-1. 输入火山引擎 ARK API Key
+1. 输入火山引擎 ARK API Key(目前仅支持 doubao-seed-2-0-pro)
 2. 选择 Whisper 字幕模型（默认 base）
 3. 可选配置：
    - 开启「视频上传模式」直接上传视频给 AI 分析
@@ -162,6 +162,7 @@ A: 需在火山引擎控制台开通联网搜索功能：https://console.volceng
 A: 系统需要安装中文字体。项目会自动尝试使用 `msyh.ttc`（微软雅黑）或 `simsun.ttc`（宋体）。
 
 ## 致谢
+感谢赞助商 浩嵐传媒 荘总 赞助支持
 
 本项目基于 https://github.com/lxfater/video-to-doc 改造而来。原项目实现了视频转学习笔记的基本功能，本项目在此基础上进行了以下改进：
 
