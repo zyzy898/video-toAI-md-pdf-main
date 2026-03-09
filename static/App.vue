@@ -265,11 +265,15 @@
                         <div v-else class="card-body" style="max-height:500px;overflow-y:auto;">
                             <div class="edit-actions-bar">
                                 <button class="btn btn-primary btn-sm" :disabled="savingSteps" @click="saveEditedSteps">
-                                    <i data-lucide="check"></i>
+                                    <i data-lucide="check">
+                                        <svg t="1773061074870" class="icon" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="41579" width="200" height="200"><path d="M204.8 102.4H153.6a51.2 51.2 0 0 0-51.2 51.2v716.8a51.2 51.2 0 0 0 51.2 51.2h51.2v-307.2a102.4 102.4 0 0 1 102.4-102.4h409.6a102.4 102.4 0 0 1 102.4 102.4v307.2h51.2a51.2 51.2 0 0 0 51.2-51.2V400.7936a51.2 51.2 0 0 0-15.0016-36.1984L659.456 117.4016A51.2 51.2 0 0 0 623.2064 102.4H256v153.6a76.8 76.8 0 0 0 76.8 76.8h307.2a25.6 25.6 0 1 1 0 51.2h-307.2A128 128 0 0 1 204.8 256V102.4z m418.4064-51.2a102.4 102.4 0 0 1 72.3968 30.0032l247.1936 247.1936A102.4 102.4 0 0 1 972.8 400.7936V870.4a102.4 102.4 0 0 1-102.4 102.4H153.6a102.4 102.4 0 0 1-102.4-102.4V153.6a102.4 102.4 0 0 1 102.4-102.4h469.6064zM256 921.6h512v-307.2a51.2 51.2 0 0 0-51.2-51.2H307.2a51.2 51.2 0 0 0-51.2 51.2v307.2z" fill="#000000" p-id="41580"></path></svg>
+                                    </i>
                                     保存并重新生成
                                 </button>
                                 <button class="btn btn-secondary btn-sm" :disabled="savingSteps" @click="cancelEditMode">
-                                    <i data-lucide="x"></i>
+                                    <i data-lucide="x">
+                                        <svg t="1773061136603" class="icon" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="42592" width="200" height="200"><path d="M512 177.8c45.1 0 88.9 8.8 130.1 26.2 39.8 16.8 75.5 40.9 106.2 71.6 30.7 30.7 54.8 66.4 71.6 106.2 17.4 41.2 26.2 84.9 26.2 130.1s-8.8 88.9-26.2 130.1c-16.8 39.8-40.9 75.5-71.6 106.2-30.7 30.7-66.4 54.8-106.2 71.6C600.9 837.2 557.2 846 512 846s-88.9-8.8-130.1-26.2c-39.8-16.8-75.5-40.9-106.2-71.6-30.7-30.7-54.8-66.4-71.6-106.2-17.4-41.2-26.2-84.9-26.2-130.1s8.8-88.9 26.2-130.1c16.8-39.8 40.9-75.5 71.6-106.2s66.4-54.8 106.2-71.6c41.2-17.3 85-26.2 130.1-26.2m0-50c-212.2 0-384.2 172-384.2 384.2s172 384.2 384.2 384.2 384.2-172 384.2-384.2-172-384.2-384.2-384.2z" p-id="42593"></path><path d="M688.1 622.3L568.6 509.1 684 402.3l-49.7-61.8-123.2 114-118.4-112.1-50.3 61.2 110.5 104.7-117 108.4 49.6 61.8 125-115.6 127.3 120.6z" p-id="42594"></path></svg>
+                                    </i>
                                     取消
                                 </button>
                             </div>
@@ -404,7 +408,8 @@ export default {
             errorTimer: null,
 
             iconFrame: null,
-            batchProgressTimer: null
+            batchProgressTimer: null,
+            singleProgressTimer: null
         };
     },
 
@@ -418,9 +423,9 @@ export default {
 
         analyzeButtonText() {
             if (this.isAnalyzing) {
-                return "批量处理中...";
+                return this.batchFiles.length === 1 ? "单文件处理中..." : "批量处理中...";
             }
-            return "开始分析";
+            return this.batchFiles.length === 1 ? "开始单文件分析" : "开始分析";
         },
 
         hasSingleResult() {
@@ -482,6 +487,7 @@ export default {
 
     beforeUnmount() {
         this.stopBatchProgressPolling();
+        this.stopSingleProgressPolling();
 
         if (this.errorTimer) {
             clearTimeout(this.errorTimer);
@@ -634,6 +640,10 @@ export default {
                 this.showError("请输入 ARK API Key");
                 return;
             }
+            if (this.batchFiles.length === 1) {
+                await this.analyzeSingle();
+                return;
+            }
             await this.analyzeBatch();
         },
 
@@ -651,6 +661,57 @@ export default {
             }
             clearInterval(this.batchProgressTimer);
             this.batchProgressTimer = null;
+        },
+
+        startSingleProgressPolling() {
+            this.stopSingleProgressPolling();
+            this.pullSingleProgress();
+            this.singleProgressTimer = setInterval(() => {
+                this.pullSingleProgress();
+            }, 1200);
+        },
+
+        stopSingleProgressPolling() {
+            if (!this.singleProgressTimer) {
+                return;
+            }
+            clearInterval(this.singleProgressTimer);
+            this.singleProgressTimer = null;
+        },
+
+        buildSingleProgressMessage(progress) {
+            const currentFile = String(progress?.current_file || "").trim();
+            const stageMessage = String(progress?.message || "").trim()
+                || "\u6b63\u5728\u5206\u6790\u89c6\u9891\uff0c\u8bf7\u7a0d\u5019...";
+            const filePart = currentFile ? `\u5f53\u524d: ${currentFile}` : "";
+            return [stageMessage, filePart].filter(Boolean).join(" | ");
+        },
+
+        async pullSingleProgress() {
+            try {
+                const progress = await this.fetchJson("/single_progress");
+                const currentFile = String(progress.current_file || "");
+
+                if (this.progressVisible) {
+                    this.progressText = this.buildSingleProgressMessage(progress);
+                }
+
+                if (!currentFile) {
+                    return;
+                }
+
+                this.batchFiles = this.batchFiles.map((item) => {
+                    if (item.status === "success" || item.status === "failed") {
+                        return item;
+                    }
+                    if (item.filename === currentFile) {
+                        return { ...item, status: "processing" };
+                    }
+                    return item;
+                });
+            } catch (_error) {
+                // ignore polling failures
+            }
         },
 
         buildProgressMessage(progress) {
@@ -694,9 +755,19 @@ export default {
             }
         },
 
-        async analyzeBatch() {
+        async analyzeSingle() {
             if (this.batchFiles.length === 0) {
-                this.showError("请先上传批量视频文件");
+                this.showError("请先上传视频文件");
+                return;
+            }
+            if (this.batchFiles.length > 1) {
+                await this.analyzeBatch();
+                return;
+            }
+
+            const singleFile = this.batchFiles[0];
+            if (!singleFile?.filepath) {
+                this.showError("文件路径无效，请重新上传");
                 return;
             }
 
@@ -706,6 +777,87 @@ export default {
                 error: ""
             }));
 
+            this.stopBatchProgressPolling();
+            this.isAnalyzing = true;
+            this.showProgress("单文件处理中", "正在分析视频，请稍候...");
+            this.startSingleProgressPolling();
+            let shouldRevealResults = false;
+
+            try {
+                const data = await this.fetchJson("/analyze", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        api_key: this.apiKey,
+                        filepath: singleFile.filepath,
+                        whisper_model: this.whisperModel,
+                        use_video: this.useVideo,
+                        web_search: this.webSearch,
+                        max_vision: this.maxVision,
+                        fps: this.fps
+                    })
+                });
+
+                this.batchFiles = this.batchFiles.map((item, index) => {
+                    if (index !== 0) {
+                        return item;
+                    }
+                    return {
+                        ...item,
+                        status: "success",
+                        error: ""
+                    };
+                });
+
+                this.resultData = data;
+                this.batchResultData = null;
+                this.isEditMode = false;
+                this.editedSteps = [];
+                shouldRevealResults = true;
+                await this.loadHistory();
+            } catch (error) {
+                const message = String(error?.message || "");
+                if (this.isWebSearchError(message)) {
+                    this.webSearch = false;
+                }
+                this.batchFiles = this.batchFiles.map((item, index) => {
+                    if (index !== 0) {
+                        return item;
+                    }
+                    return {
+                        ...item,
+                        status: "failed",
+                        error: message
+                    };
+                });
+                this.showError(`单文件分析失败: ${message}`);
+            } finally {
+                this.stopSingleProgressPolling();
+                this.isAnalyzing = false;
+                this.hideProgress();
+                if (shouldRevealResults) {
+                    await this.revealResultsGrid();
+                }
+            }
+        },
+
+        async analyzeBatch() {
+            if (this.batchFiles.length === 0) {
+                this.showError("请先上传批量视频文件");
+                return;
+            }
+            if (this.batchFiles.length === 1) {
+                await this.analyzeSingle();
+                return;
+            }
+
+            this.batchFiles = this.batchFiles.map((item) => ({
+                ...item,
+                status: "pending",
+                error: ""
+            }));
+
+            this.stopSingleProgressPolling();
             this.isAnalyzing = true;
             this.showProgress("批量处理中", "正在逐个分析视频，请稍候...");
             this.startBatchProgressPolling();
