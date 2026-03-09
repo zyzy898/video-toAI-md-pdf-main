@@ -1,0 +1,6 @@
+/outputs
+/uploads
+/history.json
+/node_modules
+/static/dist
+/.runtime_bin

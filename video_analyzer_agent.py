@@ -5,10 +5,16 @@ import logging
 import subprocess
 import re
 import base64
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from volcenginesdkarkruntime import AsyncArk
-from typing import List, Dict
+from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
+
+try:
+    import ffmpeg
+except Exception:  # pragma: no cover - 兜底兼容
+    ffmpeg = None
 
 # 配置日志
 logging.basicConfig(
@@ -43,6 +49,50 @@ class VideoAnalyzerAgent:
         )
         self.model = "doubao-seed-2-0-pro-260215"
         self.whisper_model = whisper_model
+        self.ffmpeg_cmd = self._prepare_ffmpeg_command()
+
+    def _prepare_ffmpeg_command(self) -> str:
+        """
+        优先使用 imageio-ffmpeg 提供的二进制并注入 PATH，
+        这样无需手工安装系统级 ffmpeg。
+        """
+        try:
+            import imageio_ffmpeg
+        except Exception as exc:
+            logging.warning("imageio-ffmpeg 不可用，回退到系统 ffmpeg: %s", exc)
+            return "ffmpeg"
+
+        ffmpeg_exe = Path(imageio_ffmpeg.get_ffmpeg_exe()).resolve()
+        if not ffmpeg_exe.exists():
+            logging.warning("imageio-ffmpeg ffmpeg 路径无效，回退到系统 ffmpeg: %s", ffmpeg_exe)
+            return "ffmpeg"
+
+        shim_dir = Path(__file__).resolve().parent / ".runtime_bin"
+        shim_dir.mkdir(parents=True, exist_ok=True)
+
+        if os.name == "nt":
+            shim_path = shim_dir / "ffmpeg.cmd"
+            shim_content = f'@echo off\r\n"{ffmpeg_exe}" %*\r\n'
+        else:
+            shim_path = shim_dir / "ffmpeg"
+            shim_content = f'#!/usr/bin/env sh\nexec "{ffmpeg_exe}" "$@"\n'
+
+        existing_content = ""
+        if shim_path.exists():
+            existing_content = shim_path.read_text(encoding="utf-8", errors="ignore")
+        if existing_content != shim_content:
+            shim_path.write_text(shim_content, encoding="utf-8")
+        if os.name != "nt":
+            shim_path.chmod(0o755)
+
+        current_path = os.environ.get("PATH", "")
+        path_parts = current_path.split(os.pathsep) if current_path else []
+        shim_dir_str = str(shim_dir)
+        if shim_dir_str not in path_parts:
+            os.environ["PATH"] = shim_dir_str + (os.pathsep + current_path if current_path else "")
+
+        logging.info("ffmpeg 二进制已就绪: %s", ffmpeg_exe)
+        return str(ffmpeg_exe)
 
     def _extract_response_text(self, response) -> str:
         """从模型响应中提取文本内容"""
@@ -73,21 +123,61 @@ class VideoAnalyzerAgent:
                 else:
                     raise
 
+    def _strip_code_fence(self, text: str) -> str:
+        cleaned = text.strip()
+        if cleaned.startswith("```"):
+            cleaned = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", cleaned)
+            cleaned = re.sub(r"\s*```$", "", cleaned)
+        return cleaned.strip()
+
+    def _extract_json_fragment(
+        self, text: str, opener: str, closer: str
+    ) -> Optional[str]:
+        start = text.find(opener)
+        end = text.rfind(closer)
+        if start == -1 or end == -1 or end <= start:
+            return None
+        return text[start : end + 1]
+
     def _parse_json_response(self, result: str) -> List[Dict]:
         """解析 JSON 响应"""
+        cleaned = self._strip_code_fence(result)
         try:
-            return json.loads(result)
+            parsed = json.loads(cleaned)
         except json.JSONDecodeError:
-            json_match = re.search(r"\[.*\]", result, re.DOTALL)
-            if json_match:
-                return json.loads(json_match.group())
-            else:
+            json_fragment = self._extract_json_fragment(cleaned, "[", "]")
+            if not json_fragment:
                 raise ValueError(f"无法解析模型返回的JSON格式: {result}")
+            parsed = json.loads(json_fragment)
+
+        if not isinstance(parsed, list):
+            raise ValueError(f"JSON 格式不是数组: {type(parsed).__name__}")
+        return parsed
+
+    def _parse_json_object_response(self, result: str) -> Dict[str, Any]:
+        cleaned = self._strip_code_fence(result)
+        try:
+            parsed = json.loads(cleaned)
+        except json.JSONDecodeError:
+            json_fragment = self._extract_json_fragment(cleaned, "{", "}")
+            if not json_fragment:
+                raise ValueError(f"无法解析模型返回的JSON对象: {result}")
+            parsed = json.loads(json_fragment)
+
+        if not isinstance(parsed, dict):
+            raise ValueError(f"JSON 格式不是对象: {type(parsed).__name__}")
+        return parsed
 
     def _parse_timestamp(self, time_str: str) -> int:
         """解析时间字符串为秒数"""
-        parts = time_str.split(":")
-        return int(parts[0]) * 60 + int(parts[1])
+        parts = [int(part) for part in time_str.split(":")]
+        if len(parts) == 2:
+            minutes, seconds = parts
+            return minutes * 60 + seconds
+        if len(parts) == 3:
+            hours, minutes, seconds = parts
+            return hours * 3600 + minutes * 60 + seconds
+        raise ValueError(f"不支持的时间格式: {time_str}")
 
     # ========== Whisper 字幕生成 ==========
 
@@ -294,9 +384,9 @@ class VideoAnalyzerAgent:
 
     def generate_screenshot(
         self, video_path: Path, output_dir: Path, timestamp: int, step_num: int = None
-    ) -> Path:
+    ) -> Optional[Path]:
         """
-        调用 ffmpeg 截图
+        使用 ffmpeg-python 生成截图
         :param step_num: 步骤编号，如果提供则使用 step_XX 命名
         """
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -310,27 +400,71 @@ class VideoAnalyzerAgent:
 
         output_path = output_dir / filename
 
-        cmd = [
-            "ffmpeg",
-            "-ss",
-            str(timestamp),
-            "-i",
-            str(video_path),
-            "-frames:v",
-            "1",
-            "-q:v",
-            "2",
-            str(output_path),
-            "-y",
-        ]
-        logging.info(
-            "生成截图：step=%s, time=%ss, file=%s", step_num, timestamp, output_path
-        )
-        subprocess.run(cmd, check=False, capture_output=True)
+        logging.info("生成截图：step=%s, time=%ss, file=%s", step_num, timestamp, output_path)
+        if ffmpeg is None:
+            logging.warning("ffmpeg-python 未安装，回退到命令行 ffmpeg。")
+            cmd = [
+                self.ffmpeg_cmd,
+                "-ss",
+                str(timestamp),
+                "-i",
+                str(video_path),
+                "-frames:v",
+                "1",
+                "-q:v",
+                "2",
+                str(output_path),
+                "-y",
+            ]
+            result = subprocess.run(cmd, check=False, capture_output=True, text=True)
+            if result.returncode != 0:
+                logging.warning(
+                    "截图失败：step=%s, time=%ss, rc=%s, stderr=%s",
+                    step_num,
+                    timestamp,
+                    result.returncode,
+                    (result.stderr or "").strip()[-240:],
+                )
+                return None
+        else:
+            try:
+                (
+                    ffmpeg.input(str(video_path), ss=max(0, int(timestamp)))
+                    .output(str(output_path), vframes=1, **{"q:v": 2})
+                    .overwrite_output()
+                    .run(
+                        cmd=self.ffmpeg_cmd,
+                        capture_stdout=True,
+                        capture_stderr=True,
+                        quiet=True,
+                    )
+                )
+            except ffmpeg.Error as exc:
+                stderr_text = ""
+                if exc.stderr:
+                    stderr_text = exc.stderr.decode("utf-8", errors="ignore").strip()[-240:]
+                logging.warning(
+                    "截图失败：step=%s, time=%ss, stderr=%s",
+                    step_num,
+                    timestamp,
+                    stderr_text,
+                )
+                return None
+            except Exception as exc:
+                logging.warning("截图异常：step=%s, time=%ss, err=%s", step_num, timestamp, exc)
+                return None
+
+        if not output_path.exists():
+            logging.warning("截图失败：step=%s, time=%ss, 输出文件不存在", step_num, timestamp)
+            return None
         return output_path
 
     def generate_screenshots_from_steps(
-        self, video_path: str, steps: List[Dict], output_dir: str = "images"
+        self,
+        video_path: str,
+        steps: List[Dict],
+        output_dir: str = "images",
+        max_workers: Optional[int] = None,
     ) -> List[Path]:
         """
         根据步骤列表批量生成截图
@@ -340,27 +474,65 @@ class VideoAnalyzerAgent:
         output_dir_path = Path(output_dir)
         output_dir_path.mkdir(parents=True, exist_ok=True)
 
-        screenshot_paths = []
-        for step in steps:
+        screenshot_tasks = []
+        for idx, step in enumerate(steps, start=1):
             time_str = step.get("time")
             if not time_str:
                 logging.warning(f"步骤缺少 'time' 字段，跳过: {step}")
                 continue
 
             try:
-                parts = time_str.split(":")
-                mm, ss = int(parts[0]), int(parts[1])
-                timestamp = mm * 60 + ss
-            except (ValueError, IndexError) as e:
+                timestamp = self._parse_timestamp(str(time_str))
+            except (TypeError, ValueError) as e:
                 logging.warning(f"时间格式错误 {time_str}: {e}，跳过")
                 continue
 
-            step_num = step.get("step", len(screenshot_paths) + 1)
-            screenshot_path = self.generate_screenshot(
-                video_path, output_dir_path, timestamp, step_num=step_num
-            )
-            screenshot_paths.append(screenshot_path)
-            print(f"已生成截图: {screenshot_path}")
+            try:
+                step_num = int(step.get("step", idx))
+            except (TypeError, ValueError):
+                step_num = idx
+            screenshot_tasks.append((step_num, timestamp))
+
+        if not screenshot_tasks:
+            return []
+
+        if max_workers is None:
+            max_workers = min(4, os.cpu_count() or 2)
+        max_workers = max(1, min(max_workers, len(screenshot_tasks)))
+
+        screenshot_paths: List[Path] = []
+        if max_workers == 1:
+            for step_num, timestamp in screenshot_tasks:
+                screenshot_path = self.generate_screenshot(
+                    video_path, output_dir_path, timestamp, step_num=step_num
+                )
+                if screenshot_path:
+                    screenshot_paths.append(screenshot_path)
+                    print(f"已生成截图: {screenshot_path}")
+            return screenshot_paths
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_map = {
+                executor.submit(
+                    self.generate_screenshot,
+                    video_path,
+                    output_dir_path,
+                    timestamp,
+                    step_num,
+                ): step_num
+                for step_num, timestamp in screenshot_tasks
+            }
+
+            for future in as_completed(future_map):
+                step_num = future_map[future]
+                screenshot_path = future.result()
+                if screenshot_path:
+                    screenshot_paths.append(screenshot_path)
+                    print(f"已生成截图: {screenshot_path}")
+                else:
+                    logging.warning("步骤 %s 截图生成失败", step_num)
+
+        screenshot_paths.sort(key=lambda p: p.name)
 
         return screenshot_paths
 
@@ -417,8 +589,10 @@ class VideoAnalyzerAgent:
             step_subtitle = ""
             if subtitles:
                 time_str = step.get("time", "00:00")
-                parts = time_str.split(":")
-                step_seconds = int(parts[0]) * 60 + int(parts[1])
+                try:
+                    step_seconds = self._parse_timestamp(str(time_str))
+                except (TypeError, ValueError):
+                    step_seconds = 0
                 nearby = [
                     s for s in subtitles if abs(s["start_seconds"] - step_seconds) < 30
                 ]
@@ -448,6 +622,7 @@ class VideoAnalyzerAgent:
             print(f"  步骤{step_num} (confidence={confidence:.1f}): AI 看图分析中...")
 
             max_retries = 5
+            response = None
             for attempt in range(max_retries):
                 try:
                     response = await self.client.chat.completions.create(
@@ -470,15 +645,12 @@ class VideoAnalyzerAgent:
                         print(f"    AI 看图失败: {e}，保留原始结果")
                         break
 
+            if response is None:
+                continue
+
             try:
                 result = response.choices[0].message.content
-                enhanced = json.loads(result)
-                if not isinstance(enhanced, dict):
-                    json_match = re.search(r"\{.*\}", result, re.DOTALL)
-                    if json_match:
-                        enhanced = json.loads(json_match.group())
-                    else:
-                        raise ValueError("无法解析")
+                enhanced = self._parse_json_object_response(result)
 
                 old_title = steps[idx]["title"]
                 steps[idx]["title"] = enhanced.get("title", steps[idx]["title"])
@@ -804,17 +976,20 @@ class VideoAnalyzerAgent:
         with open(srt_path, "r", encoding="utf-8") as f:
             content = f.read()
 
-        subtitle_blocks = re.split(r"\n\n+", content.strip())
+        content = content.replace("\r\n", "\n").replace("\r", "\n")
+        subtitle_blocks = re.split(r"\n{2,}", content.strip())
         subtitles = []
 
         for block in subtitle_blocks:
-            lines = block.strip().split("\n")
+            lines = [line.strip() for line in block.strip().split("\n") if line.strip()]
             if len(lines) >= 3:
                 try:
                     index = int(lines[0])
-                    time_range = lines[1]
+                    time_range = lines[1].strip()
                     text = " ".join(lines[2:])
-                    start_time, end_time = time_range.split(" --> ")
+                    start_time, end_time = [
+                        item.strip() for item in time_range.split(" --> ", 1)
+                    ]
                     start_seconds = self.time_to_seconds(start_time)
                     subtitles.append(
                         {
@@ -832,6 +1007,10 @@ class VideoAnalyzerAgent:
 
     def time_to_seconds(self, time_str):
         """将SRT时间字符串转换为秒数"""
+        time_str = time_str.strip().replace(".", ",")
         h, m, s = time_str.split(":")
-        s, ms = s.split(",")
+        if "," in s:
+            s, ms = s.split(",", 1)
+        else:
+            ms = "0"
         return int(h) * 3600 + int(m) * 60 + int(s) + int(ms) / 1000

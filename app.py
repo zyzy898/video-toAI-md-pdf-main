@@ -1,26 +1,32 @@
-import os
-import json
 import asyncio
+import json
+import logging
+import os
 import shutil
+import traceback
+import zipfile
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path
-from flask import (
-    Flask,
-    render_template,
-    request,
-    jsonify,
-    send_file,
-    send_from_directory,
-)
+from threading import Lock, RLock
+from typing import Any, Callable, Dict, List, Tuple
+
+from flask import Flask, jsonify, render_template, request, send_file, send_from_directory
 from werkzeug.utils import secure_filename
+
 from video_analyzer_agent import VideoAnalyzerAgent
 
 app = Flask(__name__)
 app.secret_key = "video-analyzer-secret-key"
 
+PROJECT_ROOT = Path(__file__).resolve().parent
+UPLOAD_ROOT = (PROJECT_ROOT / "uploads").resolve()
+OUTPUT_ROOT = (PROJECT_ROOT / "outputs").resolve()
+HISTORY_PATH = (PROJECT_ROOT / "history.json").resolve()
+
 app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024
-app.config["UPLOAD_FOLDER"] = "uploads"
-app.config["OUTPUT_FOLDER"] = "outputs"
+app.config["UPLOAD_FOLDER"] = str(UPLOAD_ROOT)
+app.config["OUTPUT_FOLDER"] = str(OUTPUT_ROOT)
 
 ALLOWED_EXTENSIONS = {
     "mp4",
@@ -37,114 +43,277 @@ ALLOWED_EXTENSIONS = {
     "ts",
     "m2ts",
 }
-
-os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
-os.makedirs(app.config["OUTPUT_FOLDER"], exist_ok=True)
-
-HISTORY_FILE = "history.json"
+ALLOWED_WHISPER_MODELS = {"tiny", "base", "small", "medium", "large"}
 MAX_HISTORY = 50
+MAX_VISION_CALLS = 10
+FPS_MIN = 0.1
+FPS_MAX = 10.0
 
-batch_progress = {}
+UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
+OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
+
+logger = logging.getLogger(__name__)
+history_lock = RLock()
+batch_progress_lock = Lock()
+batch_progress: Dict[str, Any] = {
+    "total": 0,
+    "current": 0,
+    "status": "idle",
+    "current_file": "",
+    "stage": "idle",
+    "message": "",
+}
+single_progress_lock = Lock()
+single_progress: Dict[str, Any] = {
+    "status": "idle",
+    "current_file": "",
+    "stage": "idle",
+    "message": "",
+}
 
 
-def allowed_file(filename):
+def _update_batch_progress(**kwargs: Any) -> None:
+    with batch_progress_lock:
+        batch_progress.update(kwargs)
+
+
+def _update_single_progress(**kwargs: Any) -> None:
+    with single_progress_lock:
+        single_progress.update(kwargs)
+
+
+def _vite_dev_server() -> str | None:
+    server = os.getenv("VITE_DEV_SERVER", "").strip()
+    if not server:
+        return None
+    return server.rstrip("/")
+
+
+def allowed_file(filename: str) -> bool:
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
-def load_history():
-    """加载历史记录"""
-    if os.path.exists(HISTORY_FILE):
-        try:
-            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except (json.JSONDecodeError, IOError):
-            return []
-    return []
+def _safe_int(
+    value: Any, default: int, min_value: int | None = None, max_value: int | None = None
+) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        number = default
+    if min_value is not None:
+        number = max(min_value, number)
+    if max_value is not None:
+        number = min(max_value, number)
+    return number
 
 
-def save_history(record):
-    """保存历史记录"""
-    history = load_history()
-    history.insert(0, record)
-    history = history[:MAX_HISTORY]
-    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+def _safe_float(
+    value: Any,
+    default: float,
+    min_value: float | None = None,
+    max_value: float | None = None,
+) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        number = default
+    if min_value is not None:
+        number = max(min_value, number)
+    if max_value is not None:
+        number = min(max_value, number)
+    return number
+
+
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _json_payload() -> Dict[str, Any]:
+    payload = request.get_json(silent=True)
+    return payload if isinstance(payload, dict) else {}
+
+
+def _assert_within(path: Path, root: Path, field_name: str) -> None:
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"{field_name} 不在允许目录内") from exc
+
+
+def _resolve_upload_filepath(raw_path: Any) -> Path:
+    if not raw_path:
+        raise ValueError("文件路径不能为空")
+    path = Path(str(raw_path)).expanduser().resolve(strict=False)
+    _assert_within(path, UPLOAD_ROOT, "filepath")
+    if not path.exists() or not path.is_file():
+        raise FileNotFoundError("文件不存在")
+    return path
+
+
+def _resolve_output_dir(raw_output_dir: Any, must_exist: bool = True) -> Path:
+    if not raw_output_dir:
+        raise ValueError("输出目录不能为空")
+    candidate = Path(str(raw_output_dir))
+    if not candidate.is_absolute():
+        candidate = OUTPUT_ROOT / candidate
+    output_dir = candidate.expanduser().resolve(strict=False)
+    _assert_within(output_dir, OUTPUT_ROOT, "output_dir")
+    if must_exist and not output_dir.exists():
+        raise FileNotFoundError("输出目录不存在")
+    return output_dir
+
+
+def _read_history_unlocked() -> List[Dict[str, Any]]:
+    if not HISTORY_PATH.exists():
+        return []
+    try:
+        with open(HISTORY_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except (json.JSONDecodeError, OSError):
+        return []
+
+
+def _write_history_unlocked(history: List[Dict[str, Any]]) -> None:
+    tmp_path = HISTORY_PATH.with_suffix(".tmp")
+    with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(history, f, ensure_ascii=False, indent=2)
+    tmp_path.replace(HISTORY_PATH)
 
 
-def delete_history_record(record_id):
-    """删除指定历史记录"""
-    history = load_history()
-    history = [r for r in history if r.get("id") != record_id]
-    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-        json.dump(history, f, ensure_ascii=False, indent=2)
+def load_history() -> List[Dict[str, Any]]:
+    with history_lock:
+        return _read_history_unlocked()
+
+
+def save_history(record: Dict[str, Any]) -> None:
+    with history_lock:
+        history = _read_history_unlocked()
+        history.insert(0, record)
+        _write_history_unlocked(history[:MAX_HISTORY])
+
+
+def delete_history_record(record_id: str) -> None:
+    with history_lock:
+        history = _read_history_unlocked()
+        history = [r for r in history if r.get("id") != record_id]
+        _write_history_unlocked(history)
+
+
+def _run_async(coro):
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+
+def _build_unique_upload_path(filename: str) -> Path:
+    safe_name = secure_filename(filename)
+    if not safe_name:
+        safe_name = f"upload_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
+
+    candidate = UPLOAD_ROOT / safe_name
+    stem = candidate.stem
+    suffix = candidate.suffix
+    counter = 1
+
+    while candidate.exists():
+        candidate = UPLOAD_ROOT / f"{stem}_{counter}{suffix}"
+        counter += 1
+
+    return candidate
+
+
+def _create_unique_output_dir(video_path: Path) -> Path:
+    base_name = secure_filename(video_path.stem) or "video"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    candidate = OUTPUT_ROOT / f"{base_name}_{timestamp}"
+    counter = 1
+
+    while candidate.exists():
+        candidate = OUTPUT_ROOT / f"{base_name}_{timestamp}_{counter}"
+        counter += 1
+
+    candidate.mkdir(parents=True, exist_ok=False)
+    return candidate
+
+
+def _normalize_processing_options(data: Dict[str, Any]) -> Tuple[str, bool, bool, int, float]:
+    whisper_model = str(data.get("whisper_model", "base")).strip().lower() or "base"
+    if whisper_model not in ALLOWED_WHISPER_MODELS:
+        whisper_model = "base"
+
+    use_video = _as_bool(data.get("use_video", False))
+    web_search = _as_bool(data.get("web_search", False))
+    max_vision = _safe_int(data.get("max_vision", 10), 10, 0, MAX_VISION_CALLS)
+    fps = _safe_float(data.get("fps", 1.0), 1.0, FPS_MIN, FPS_MAX)
+    return whisper_model, use_video, web_search, max_vision, fps
 
 
 def process_video(
-    video_path, api_key, whisper_model, use_video, web_search, max_vision, fps=1.0
-):
-    from video_analyzer_agent import VideoAnalyzerAgent
+    video_path: Path,
+    api_key: str,
+    whisper_model: str,
+    use_video: bool,
+    web_search: bool,
+    max_vision: int,
+    fps: float = 1.0,
+    progress_callback: Callable[[str, str], None] | None = None,
+) -> Tuple[List[Dict[str, Any]], str, str, str, bool]:
+    def report(stage: str, message: str) -> None:
+        if progress_callback:
+            progress_callback(stage, message)
 
-    output_dir = Path(app.config["OUTPUT_FOLDER"]) / Path(video_path).stem
-    output_dir.mkdir(exist_ok=True)
+    report("prepare", "\u6b63\u5728\u51c6\u5907\u5206\u6790\u4efb\u52a1...")
+    output_dir = _create_unique_output_dir(video_path)
 
-    # 复制视频到输出目录
-    video_dest = output_dir / Path(video_path).name
+    video_dest = output_dir / video_path.name
     if not video_dest.exists():
         shutil.copy2(video_path, video_dest)
 
     agent = VideoAnalyzerAgent(api_key if api_key else None, whisper_model)
-
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
     srt_path = None
 
     if not use_video:
-        # 字幕驱动模式
+        report("subtitle", "\u6b63\u5728\u751f\u6210\u5b57\u5e55...")
         srt_path = agent.generate_subtitles(str(video_path), str(output_dir))
-        steps = loop.run_until_complete(agent.analyze_subtitles(srt_path))
+        report("analysis", "\u6b63\u5728\u5206\u6790\u5b57\u5e55\u5185\u5bb9...")
+        steps = _run_async(agent.analyze_subtitles(srt_path))
     else:
-        # 视频上传模式 - 先尝试生成字幕作为参考
+        report("subtitle", "\u6b63\u5728\u5c1d\u8bd5\u751f\u6210\u5b57\u5e55...")
         try:
             srt_path = agent.generate_subtitles(str(video_path), str(output_dir))
-        except Exception as e:
-            print(f"Whisper 字幕生成失败: {e}，将继续不使用字幕")
+        except Exception as exc:
+            logger.warning("Whisper 字幕生成失败，继续视频分析模式: %s", exc)
             srt_path = None
-
-        # 上传视频给 AI 分析
-        steps = loop.run_until_complete(agent.analyze_video(str(video_path), fps))
-
-    # 复制字幕到输出目录
-    if srt_path:
-        srt_dest = output_dir / Path(srt_path).name
-        if not srt_dest.exists():
-            shutil.copy2(srt_path, srt_dest)
+        report("analysis", "\u6b63\u5728\u5206\u6790\u89c6\u9891\u753b\u9762...")
+        steps = _run_async(agent.analyze_video(str(video_path), fps))
 
     if not steps:
-        loop.close()
+        report("analysis", "\u672a\u8bc6\u522b\u5230\u6709\u6548\u6b65\u9aa4")
         return [], "", str(output_dir), str(output_dir / "operation_guide.pdf"), False
 
-    print(f"识别到 {len(steps)} 个步骤，正在生成截图...")
-
-    # 生成截图（两种模式都需要）
     image_dir = output_dir / "images"
     image_dir.mkdir(exist_ok=True)
+    report("screenshots", "\u6b63\u5728\u751f\u6210\u5173\u952e\u622a\u56fe...")
     agent.generate_screenshots_from_steps(str(video_path), steps, str(image_dir))
 
-    print("截图生成完成，正在进行 AI 看图增强...")
-
-    # AI 看图增强仅在字幕驱动模式下进行
     if max_vision > 0 and not use_video and srt_path:
-        steps = loop.run_until_complete(
+        report("vision", "\u6b63\u5728\u8fdb\u884c\u89c6\u89c9\u589e\u5f3a...")
+        steps = _run_async(
             agent.enhance_steps_with_vision(
                 steps, str(image_dir), srt_path=srt_path, max_calls=max_vision
             )
         )
 
-    print("AI 看图增强完成，正在生成 Markdown 文档...")
-
     output_md = output_dir / "operation_guide.md"
-    loop.run_until_complete(
+    report("document", "\u6b63\u5728\u751f\u6210\u603b\u7ed3\u6587\u6863...")
+    _run_async(
         agent.generate_step_document(
             steps=steps,
             output_path=str(output_md),
@@ -154,28 +323,18 @@ def process_video(
         )
     )
 
-    print("Markdown 文档生成完成，正在生成 PDF...")
-
-    # 生成 PDF 文档
     output_pdf = output_dir / "operation_guide.pdf"
+    report("pdf", "\u6b63\u5728\u751f\u6210 PDF...")
     agent.generate_pdf(str(output_md), str(output_pdf))
-
-    print("PDF 生成完成")
-
-    loop.close()
-
-    # 保存步骤分析结果
     agent.save_results(steps, str(output_dir / "steps.json"))
+    report("done", "\u5f53\u524d\u89c6\u9891\u5206\u6790\u5b8c\u6210")
 
-    # 根据是否有步骤决定是否保存历史记录
     has_steps = len(steps) > 0
-
-    # 保存历史记录
     if has_steps:
         record = {
-            "id": datetime.now().strftime("%Y%m%d%H%M%S"),
+            "id": datetime.now().strftime("%Y%m%d%H%M%S%f"),
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "video_name": Path(video_path).name,
+            "video_name": video_path.name,
             "output_dir": str(output_dir),
             "steps_count": len(steps),
             "mode": "video" if use_video else "subtitle",
@@ -195,7 +354,7 @@ def process_video(
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    return render_template("index.html", vite_dev_server=_vite_dev_server())
 
 
 @app.route("/main.css")
@@ -205,9 +364,6 @@ def maincss():
 
 @app.route("/upload", methods=["POST"])
 def upload_file():
-    # 确保上传目录存在
-    os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
-
     if "file" not in request.files:
         return jsonify({"error": "没有文件"}), 400
 
@@ -218,42 +374,68 @@ def upload_file():
     if not allowed_file(file.filename):
         return jsonify({"error": "不支持的文件格式"}), 400
 
-    filename = secure_filename(file.filename)
-    filepath = os.path.join(app.config["UPLOAD_FOLDER"], filename)
-    file.save(filepath)
-
-    return jsonify({"filename": filename, "filepath": filepath})
+    save_path = _build_unique_upload_path(file.filename)
+    file.save(str(save_path))
+    return jsonify({"filename": save_path.name, "filepath": str(save_path)})
 
 
 @app.route("/analyze", methods=["POST"])
 def analyze():
-    # 确保输出目录存在
-    os.makedirs(app.config["OUTPUT_FOLDER"], exist_ok=True)
-
-    data = request.json
-    api_key = data.get("api_key", "").strip()
-
+    data = _json_payload()
+    api_key = str(data.get("api_key", "")).strip()
     if not api_key:
         return jsonify({"error": "请输入 API Key"}), 400
 
-    filepath = data.get("filepath")
-    whisper_model = data.get("whisper_model", "base")
-    use_video = data.get("use_video", False)
-    web_search = data.get("web_search", False)
-    max_vision = int(data.get("max_vision", 10))
-    fps = float(data.get("fps", 1.0))
+    whisper_model, use_video, web_search, max_vision, fps = _normalize_processing_options(
+        data
+    )
 
-    if not filepath or not os.path.exists(filepath):
+    try:
+        video_path = _resolve_upload_filepath(data.get("filepath"))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except FileNotFoundError:
         return jsonify({"error": "文件不存在"}), 400
 
     try:
-        steps, md_content, output_dir, output_pdf, has_steps = process_video(
-            filepath, api_key, whisper_model, use_video, web_search, max_vision, fps
+        _update_single_progress(
+            status="processing",
+            current_file=video_path.name,
+            stage="prepare",
+            message="\u4efb\u52a1\u5df2\u542f\u52a8\uff0c\u6b63\u5728\u521d\u59cb\u5316...",
         )
 
+        def _single_progress_callback(stage: str, message: str) -> None:
+            _update_single_progress(
+                status="processing",
+                current_file=video_path.name,
+                stage=stage,
+                message=message,
+            )
+
+        steps, md_content, output_dir, output_pdf, has_steps = process_video(
+            video_path,
+            api_key,
+            whisper_model,
+            use_video,
+            web_search,
+            max_vision,
+            fps,
+            progress_callback=_single_progress_callback,
+        )
         if not has_steps:
+            _update_single_progress(
+                status="failed",
+                stage="failed",
+                message="\u672a\u80fd\u8bc6\u522b\u5230\u64cd\u4f5c\u6b65\u9aa4",
+            )
             return jsonify({"error": "未能识别到操作步骤"}), 500
 
+        _update_single_progress(
+            status="completed",
+            stage="done",
+            message="\u89c6\u9891\u5206\u6790\u5df2\u5b8c\u6210",
+        )
         return jsonify(
             {
                 "success": True,
@@ -263,26 +445,29 @@ def analyze():
                 "pdf_path": output_pdf,
             }
         )
-    except Exception as e:
-        import traceback
-
-        return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
+    except Exception as exc:
+        _update_single_progress(
+            status="failed",
+            stage="failed",
+            message=str(exc),
+        )
+        return jsonify({"error": str(exc), "trace": traceback.format_exc()}), 500
 
 
 @app.route("/download/<filename>")
 def download_file(filename):
-    return send_from_directory(
-        app.config["OUTPUT_FOLDER"], filename, as_attachment=True
-    )
+    return send_from_directory(app.config["OUTPUT_FOLDER"], filename, as_attachment=True)
 
 
 @app.route("/download_zip/<output_dir>")
 def download_zip(output_dir):
-    """下载包含 md、pdf 和 images 的 zip 文件"""
-    import zipfile
-    from io import BytesIO
+    try:
+        output_path = _resolve_output_dir(output_dir, must_exist=True)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except FileNotFoundError:
+        return jsonify({"error": "文件不存在"}), 404
 
-    output_path = Path(app.config["OUTPUT_FOLDER"]) / output_dir
     md_file = output_path / "operation_guide.md"
     pdf_file = output_path / "operation_guide.pdf"
     images_dir = output_path / "images"
@@ -292,24 +477,20 @@ def download_zip(output_dir):
 
     memory_file = BytesIO()
     with zipfile.ZipFile(memory_file, "w", zipfile.ZIP_DEFLATED) as zf:
-        # 添加 md 文件
         zf.write(md_file, "operation_guide.md")
-
-        # 添加 pdf 文件
         if pdf_file.exists():
             zf.write(pdf_file, "operation_guide.pdf")
-
-        # 添加 images 文件夹
         if images_dir.exists():
-            for img_file in images_dir.glob("*.jpg"):
-                zf.write(img_file, f"images/{img_file.name}")
+            for pattern in ("*.jpg", "*.jpeg", "*.png", "*.webp"):
+                for img_file in images_dir.glob(pattern):
+                    zf.write(img_file, f"images/{img_file.name}")
 
     memory_file.seek(0)
     return send_file(
         memory_file,
         mimetype="application/zip",
         as_attachment=True,
-        download_name=f"{output_dir}.zip",
+        download_name=f"{output_path.name}.zip",
     )
 
 
@@ -320,48 +501,40 @@ def serve_output_file(filename):
 
 @app.route("/regenerate", methods=["POST"])
 def regenerate_document():
-    """根据编辑后的步骤重新生成文档"""
-    data = request.json
-
-    api_key = data.get("api_key", "").strip()
+    data = _json_payload()
+    api_key = str(data.get("api_key", "")).strip()
     if not api_key:
         return jsonify({"error": "请输入 API Key"}), 400
 
     steps = data.get("steps", [])
-    output_dir = data.get("output_dir")
-    web_search = data.get("web_search", False)
-
-    if not steps:
+    if not isinstance(steps, list) or not steps:
         return jsonify({"error": "没有步骤数据"}), 400
 
-    if not output_dir:
+    try:
+        output_dir = _resolve_output_dir(data.get("output_dir"), must_exist=True)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except FileNotFoundError:
         return jsonify({"error": "输出目录不存在"}), 400
+
+    web_search = _as_bool(data.get("web_search", False))
 
     try:
         agent = VideoAnalyzerAgent(api_key)
-
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-        output_path = Path(output_dir) / "operation_guide.md"
-        image_dir = "images"
-
-        loop.run_until_complete(
+        output_path = output_dir / "operation_guide.md"
+        _run_async(
             agent.generate_step_document(
                 steps=steps,
                 output_path=str(output_path),
                 srt_path=None,
-                image_dir=image_dir,
+                image_dir="images",
                 web_search=web_search,
             )
         )
 
-        output_pdf = Path(output_dir) / "operation_guide.pdf"
+        output_pdf = output_dir / "operation_guide.pdf"
         agent.generate_pdf(str(output_path), str(output_pdf))
-
-        loop.close()
-
-        agent.save_results(steps, str(Path(output_dir) / "steps.json"))
+        agent.save_results(steps, str(output_dir / "steps.json"))
 
         with open(output_path, "r", encoding="utf-8") as f:
             md_content = f.read()
@@ -371,216 +544,256 @@ def regenerate_document():
                 "success": True,
                 "steps": steps,
                 "markdown": md_content,
-                "output_dir": output_dir,
+                "output_dir": str(output_dir),
                 "pdf_path": str(output_pdf),
             }
         )
-    except Exception as e:
-        import traceback
-
-        return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
+    except Exception as exc:
+        return jsonify({"error": str(exc), "trace": traceback.format_exc()}), 500
 
 
 @app.route("/cleanup/<filename>")
 def cleanup(filename):
     try:
-        filepath = os.path.join(app.config["UPLOAD_FOLDER"], filename)
-        if os.path.exists(filepath):
-            os.remove(filepath)
+        safe_name = secure_filename(filename)
+        if not safe_name:
+            return jsonify({"error": "文件名无效"}), 400
 
-        output_dir = os.path.join(app.config["OUTPUT_FOLDER"], Path(filename).stem)
-        if os.path.exists(output_dir):
-            shutil.rmtree(output_dir)
+        upload_file_path = UPLOAD_ROOT / safe_name
+        if upload_file_path.exists():
+            upload_file_path.unlink()
+
+        # 兼容旧目录命名: outputs/<stem>
+        legacy_output_dir = OUTPUT_ROOT / Path(safe_name).stem
+        if legacy_output_dir.exists() and legacy_output_dir.is_dir():
+            shutil.rmtree(legacy_output_dir)
+
+        # 新目录命名: outputs/<stem>_<timestamp>
+        stem_prefix = secure_filename(Path(safe_name).stem)
+        if stem_prefix:
+            for output_dir in OUTPUT_ROOT.glob(f"{stem_prefix}_*"):
+                if output_dir.is_dir():
+                    shutil.rmtree(output_dir)
 
         return jsonify({"success": True})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
 
 
 @app.route("/history", methods=["GET"])
 def get_history():
-    """获取历史记录列表"""
-    history = load_history()
-    return jsonify({"history": history})
+    return jsonify({"history": load_history()})
 
 
 @app.route("/history/<record_id>", methods=["GET"])
 def get_history_record(record_id):
-    """获取单条历史记录的详细信息"""
     history = load_history()
-    for record in history:
-        if record.get("id") == record_id:
-            output_dir = record.get("output_dir")
-            if output_dir and os.path.exists(output_dir):
-                steps_path = os.path.join(output_dir, "steps.json")
-                md_path = os.path.join(output_dir, "operation_guide.md")
+    for item in history:
+        if item.get("id") != record_id:
+            continue
 
-                if os.path.exists(steps_path):
+        record = dict(item)
+        output_dir_value = record.get("output_dir")
+        if output_dir_value:
+            try:
+                output_dir = _resolve_output_dir(output_dir_value, must_exist=True)
+            except (ValueError, FileNotFoundError):
+                output_dir = None
+
+            if output_dir:
+                steps_path = output_dir / "steps.json"
+                md_path = output_dir / "operation_guide.md"
+
+                if steps_path.exists():
                     with open(steps_path, "r", encoding="utf-8") as f:
                         record["steps"] = json.load(f)
-
-                if os.path.exists(md_path):
+                if md_path.exists():
                     with open(md_path, "r", encoding="utf-8") as f:
                         record["markdown"] = f.read()
 
-            return jsonify({"record": record})
+        return jsonify({"record": record})
 
     return jsonify({"error": "记录不存在"}), 404
 
 
 @app.route("/history/<record_id>", methods=["DELETE"])
 def delete_history(record_id):
-    """删除历史记录"""
     try:
         delete_history_record(record_id)
         return jsonify({"success": True})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
 
 
 @app.route("/upload_batch", methods=["POST"])
 def upload_batch_files():
-    """批量上传多个视频文件"""
-    os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
-
     if "files" not in request.files:
         return jsonify({"error": "没有文件"}), 400
 
     files = request.files.getlist("files")
-    if not files or len(files) == 0:
+    if not files:
         return jsonify({"error": "没有选择文件"}), 400
 
     uploaded = []
     errors = []
 
     for file in files:
-        if file.filename == "":
+        if not file or file.filename == "":
             continue
         if not allowed_file(file.filename):
             errors.append(f"{file.filename}: 不支持的格式")
             continue
 
-        filename = secure_filename(file.filename)
-        filepath = os.path.join(app.config["UPLOAD_FOLDER"], filename)
-
-        # 处理文件名冲突
-        counter = 1
-        base_name = Path(filename).stem
-        extension = Path(filename).suffix
-        while os.path.exists(filepath):
-            filename = f"{base_name}_{counter}{extension}"
-            filepath = os.path.join(app.config["UPLOAD_FOLDER"], filename)
-            counter += 1
-
         try:
-            file.save(filepath)
-            uploaded.append({"filename": filename, "filepath": filepath})
-        except Exception as e:
-            errors.append(f"{file.filename}: {str(e)}")
+            save_path = _build_unique_upload_path(file.filename)
+            file.save(str(save_path))
+            uploaded.append({"filename": save_path.name, "filepath": str(save_path)})
+        except Exception as exc:
+            errors.append(f"{file.filename}: {str(exc)}")
 
     return jsonify({"uploaded": uploaded, "errors": errors, "total": len(files)})
 
 
 @app.route("/batch_progress", methods=["GET"])
 def get_batch_progress():
-    """获取批量处理进度"""
-    return jsonify(batch_progress)
+    with batch_progress_lock:
+        return jsonify(dict(batch_progress))
+
+
+@app.route("/single_progress", methods=["GET"])
+def get_single_progress():
+    with single_progress_lock:
+        return jsonify(dict(single_progress))
 
 
 @app.route("/analyze_batch", methods=["POST"])
 def analyze_batch():
-    """批量分析多个视频"""
-    global batch_progress
-    os.makedirs(app.config["OUTPUT_FOLDER"], exist_ok=True)
-
-    data = request.json
-    api_key = data.get("api_key", "").strip()
-
+    data = _json_payload()
+    api_key = str(data.get("api_key", "")).strip()
     if not api_key:
         return jsonify({"error": "请输入 API Key"}), 400
 
-    filepaths = data.get("filepaths", [])
-    if not filepaths or len(filepaths) == 0:
+    raw_filepaths = data.get("filepaths", [])
+    if not isinstance(raw_filepaths, list) or not raw_filepaths:
         return jsonify({"error": "没有视频文件"}), 400
 
-    whisper_model = data.get("whisper_model", "base")
-    use_video = data.get("use_video", False)
-    web_search = data.get("web_search", False)
-    max_vision = int(data.get("max_vision", 10))
-    fps = float(data.get("fps", 1.0))
+    whisper_model, use_video, web_search, max_vision, fps = _normalize_processing_options(
+        data
+    )
 
-    # 验证所有文件存在
-    for fp in filepaths:
-        if not os.path.exists(fp):
-            return jsonify({"error": f"文件不存在: {fp}"}), 400
+    filepaths: List[Path] = []
+    for raw_path in raw_filepaths:
+        try:
+            filepaths.append(_resolve_upload_filepath(raw_path))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except FileNotFoundError:
+            return jsonify({"error": f"文件不存在: {raw_path}"}), 400
 
-    # 初始化进度
-    batch_progress = {
-        "total": len(filepaths),
-        "current": 0,
-        "status": "processing",
-        "current_file": "",
-    }
+    _update_batch_progress(
+        total=len(filepaths),
+        current=0,
+        status="processing",
+        current_file="",
+        stage="prepare",
+        message="\u6279\u91cf\u4efb\u52a1\u5df2\u542f\u52a8\uff0c\u6b63\u5728\u7b49\u5f85\u5904\u7406...",
+    )
 
     results = []
-
-    for idx, filepath in enumerate(filepaths):
-        # 更新进度
-        batch_progress["current"] = idx + 1
-        batch_progress["current_file"] = Path(filepath).name
-
-        try:
-            print(f"\n{'='*50}")
-            print(f"处理第 {idx+1}/{len(filepaths)} 个视频: {Path(filepath).name}")
-            print(f"{'='*50}")
-
-            steps, md_content, output_dir, output_pdf, has_steps = process_video(
-                filepath, api_key, whisper_model, use_video, web_search, max_vision, fps
+    try:
+        for idx, filepath in enumerate(filepaths, start=1):
+            _update_batch_progress(
+                current=idx,
+                current_file=filepath.name,
+                stage="prepare",
+                message=f"\u6b63\u5728\u51c6\u5907\u5904\u7406: {filepath.name}",
             )
 
-            if not has_steps:
+            def _batch_progress_callback(stage: str, message: str, *, _idx=idx, _name=filepath.name):
+                _update_batch_progress(
+                    current=_idx,
+                    current_file=_name,
+                    stage=stage,
+                    message=message,
+                )
+
+            try:
+                steps, md_content, output_dir, output_pdf, has_steps = process_video(
+                    filepath,
+                    api_key,
+                    whisper_model,
+                    use_video,
+                    web_search,
+                    max_vision,
+                    fps,
+                    progress_callback=_batch_progress_callback,
+                )
+
+                if not has_steps:
+                    _update_batch_progress(
+                        current=idx,
+                        current_file=filepath.name,
+                        stage="failed",
+                        message="\u672a\u80fd\u8bc6\u522b\u5230\u64cd\u4f5c\u6b65\u9aa4",
+                    )
+                    results.append(
+                        {
+                            "index": idx,
+                            "filename": filepath.name,
+                            "success": False,
+                            "error": "未识别到操作步骤",
+                        }
+                    )
+                    continue
+
                 results.append(
                     {
-                        "index": idx + 1,
-                        "filename": Path(filepath).name,
-                        "success": False,
-                        "error": "未识别到操作步骤",
+                        "index": idx,
+                        "filename": filepath.name,
+                        "success": True,
+                        "steps_count": len(steps) if steps else 0,
+                        "output_dir": output_dir,
+                        "pdf_path": output_pdf,
+                        "markdown": md_content,
+                        "steps": steps,
                     }
                 )
-                continue
-
-            results.append(
-                {
-                    "index": idx + 1,
-                    "filename": Path(filepath).name,
-                    "success": True,
-                    "steps_count": len(steps) if steps else 0,
-                    "output_dir": output_dir,
-                    "pdf_path": output_pdf,
-                    "markdown": md_content,
-                    "steps": steps,
-                }
-            )
-
-        except Exception as e:
-            error_msg = str(e)
-            if "ToolNotOpen" in error_msg or "web search" in error_msg.lower():
-                error_msg = "联网搜索功能未开通，请在火山引擎控制台开通：https://console.volcengine.com/common-buy/CC_content_plugin"
-            results.append(
-                {
-                    "index": idx + 1,
-                    "filename": Path(filepath).name,
-                    "success": False,
-                    "error": error_msg,
-                }
-            )
+                _update_batch_progress(
+                    current=idx,
+                    current_file=filepath.name,
+                    stage="done",
+                    message=f"{filepath.name} \u5206\u6790\u5b8c\u6210",
+                )
+            except Exception as exc:
+                error_msg = str(exc)
+                if "ToolNotOpen" in error_msg or "web search" in error_msg.lower():
+                    error_msg = (
+                        "联网搜索功能未开通，请在火山引擎控制台开通："
+                        "https://console.volcengine.com/common-buy/CC_content_plugin"
+                    )
+                _update_batch_progress(
+                    current=idx,
+                    current_file=filepath.name,
+                    stage="failed",
+                    message=error_msg,
+                )
+                results.append(
+                    {
+                        "index": idx,
+                        "filename": filepath.name,
+                        "success": False,
+                        "error": error_msg,
+                    }
+                )
+    finally:
+        _update_batch_progress(
+            status="completed",
+            current_file="",
+            stage="done",
+            message="\u6279\u91cf\u5206\u6790\u5df2\u5b8c\u6210",
+        )
 
     success_count = sum(1 for r in results if r.get("success"))
-    print(f"\n批量处理完成: 成功 {success_count}/{len(filepaths)}")
-
-    # 更新进度为完成
-    batch_progress["status"] = "completed"
-
     return jsonify(
         {
             "success": True,
@@ -596,38 +809,32 @@ def analyze_batch():
 
 @app.route("/download_batch_zip", methods=["POST"])
 def download_batch_zip():
-    """下载批量处理结果的 ZIP 文件"""
-    import zipfile
-    from io import BytesIO
-
-    data = request.json
+    data = _json_payload()
     output_dirs = data.get("output_dirs", [])
-
-    if not output_dirs:
+    if not isinstance(output_dirs, list) or not output_dirs:
         return jsonify({"error": "没有输出目录"}), 400
 
     memory_file = BytesIO()
-
     with zipfile.ZipFile(memory_file, "w", zipfile.ZIP_DEFLATED) as zf:
-        for output_dir in output_dirs:
-            output_path = Path(app.config["OUTPUT_FOLDER"]) / output_dir
-            if not output_path.exists():
+        for raw_output_dir in output_dirs:
+            try:
+                output_path = _resolve_output_dir(raw_output_dir, must_exist=True)
+            except (ValueError, FileNotFoundError):
                 continue
 
-            base_name = output_dir
-
+            base_name = output_path.name
             md_file = output_path / "operation_guide.md"
+            pdf_file = output_path / "operation_guide.pdf"
+            images_dir = output_path / "images"
+
             if md_file.exists():
                 zf.write(md_file, f"{base_name}/operation_guide.md")
-
-            pdf_file = output_path / "operation_guide.pdf"
             if pdf_file.exists():
                 zf.write(pdf_file, f"{base_name}/operation_guide.pdf")
-
-            images_dir = output_path / "images"
             if images_dir.exists():
-                for img_file in images_dir.glob("*.jpg"):
-                    zf.write(img_file, f"{base_name}/images/{img_file.name}")
+                for pattern in ("*.jpg", "*.jpeg", "*.png", "*.webp"):
+                    for img_file in images_dir.glob(pattern):
+                        zf.write(img_file, f"{base_name}/images/{img_file.name}")
 
     memory_file.seek(0)
     return send_file(
@@ -639,4 +846,5 @@ def download_batch_zip():
 
 
 if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+    debug_mode = os.getenv("FLASK_DEBUG", "").strip().lower() in {"1", "true", "yes"}
+    app.run(debug=debug_mode, port=5000)

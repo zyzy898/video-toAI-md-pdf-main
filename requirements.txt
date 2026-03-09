@@ -1,20 +1,24 @@
-# 视频转文档 - Python 依赖
+# Web 核心框架
+flask>=2.3.0
+werkzeug>=2.3.0
 
-# 核心依赖
-flask>=2.0.0
-werkzeug>=2.0.0
+# 环境变量读取
+python-dotenv>=1.0.0
 
-# AI 分析
+# ARK SDK（video_analyzer_agent.py 中使用 AsyncArk）
 volcengine-python-sdk[ark]>=1.0.0
-python-dotenv>=0.19.0
 
-# 视频处理
-openai-whisper>=20231117
+# 视频处理与截图（ffmpeg-python + 自动 ffmpeg 二进制）
 ffmpeg-python>=0.2.0
+imageio-ffmpeg>=0.5.1
 
-# 文档生成
-markdown>=3.4.0
-fpdf2>=2.5.0
+# 语音转字幕（通过 subprocess 调用 `whisper` 命令）
+openai-whisper>=20231117
 
-# 可选：增强功能
-# Pillow>=9.0.0  # 图片处理（如需额外图像操作）
+# Markdown / PDF 文档生成
+markdown>=3.5.0
+fpdf2>=2.7.0
+
+# 说明：
+# - 程序启动时会优先使用 imageio-ffmpeg 提供的 ffmpeg，并自动注入 PATH。
+# - 若 imageio-ffmpeg 不可用，才会回退到系统 ffmpeg。
