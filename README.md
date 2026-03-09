@@ -3,6 +3,8 @@
 将视频自动分析为图文操作文档，输出 `Markdown` 与 `PDF`，支持单视频与批量处理、分片上传与断点续传。  
 适合做教程沉淀、操作留档、流程复盘。📝
 
+<img width="2488" height="1279" alt="image" src="https://github.com/user-attachments/assets/a20b9d57-3821-442c-aebf-8cb2e814a580" />
+
 ## ✨ 项目简介
 
 项目由 `Flask` 后端和 `Vue 3 + Vite` 前端组成：
