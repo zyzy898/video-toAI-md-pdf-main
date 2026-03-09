@@ -40,9 +40,9 @@ flowchart TD
     B -->|视频直传| D[抽帧与视觉理解]
     C --> E[LLM 抽取步骤]
     D --> E
-    E --> F[低置信度步骤 AI 看图增强（可选）]
-    F --> G[生成 Markdown]
-    G --> H[导出 PDF / ZIP]
+    E --> F[低置信度步骤 AI 看图增强]
+    F --> G[生成 Markdown，PDF]
+    G --> H[导出 ZIP]
     H --> I[写入 history.json]
 ```
 
@@ -89,19 +89,7 @@ pip install -r requirements.txt
 npm install
 ```
 
-### 3) 环境变量
-
-- `ARK_API_KEY`：必填，后端分析模型调用使用
-- `VITE_DEV_SERVER`：可选，仅开发模式使用（让 Flask 指向 Vite Dev Server）
-
-PowerShell 示例：
-
-```powershell
-$env:ARK_API_KEY="你的ark_key"
-$env:VITE_DEV_SERVER="http://127.0.0.1:5173"
-```
-
-### 4) 启动方式
+### 3) 启动方式
 
 #### 开发模式（推荐）
 
