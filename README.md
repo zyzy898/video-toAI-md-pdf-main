@@ -40,9 +40,9 @@ flowchart TD
     B -->|视频直传| D[抽帧与视觉理解]
     C --> E[LLM 抽取步骤]
     D --> E
-    E --> F[低置信度步骤 AI 看图增强（可选）]
-    F --> G[生成 Markdown]
-    G --> H[导出 PDF / ZIP]
+    E --> F[低置信度步骤 AI 看图增强]
+    F --> G[生成 Markdown，PDF]
+    G --> H[导出 ZIP]
     H --> I[写入 history.json]
 ```
 
@@ -80,7 +80,7 @@ video-toAI-md-pdf-main/
 - Python `3.8+`（建议 `3.10+`）
 - Node.js `18+`（建议 `20+`）
 - 可访问 Python 包源（用于安装 `ffmpeg-python` 与 `imageio-ffmpeg`）
-- 可用的 `ARK_API_KEY`
+- 可用的 `ARK_API_KEY (目前仅支持 doubao-seed-2-0-pro-260215)`
 
 ### 2) 安装依赖
 
@@ -89,19 +89,7 @@ pip install -r requirements.txt
 npm install
 ```
 
-### 3) 环境变量
-
-- `ARK_API_KEY`：必填，后端分析模型调用使用
-- `VITE_DEV_SERVER`：可选，仅开发模式使用（让 Flask 指向 Vite Dev Server）
-
-PowerShell 示例：
-
-```powershell
-$env:ARK_API_KEY="你的ark_key"
-$env:VITE_DEV_SERVER="http://127.0.0.1:5173"
-```
-
-### 4) 启动方式
+### 3) 启动方式
 
 #### 开发模式（推荐）
 
@@ -158,12 +146,6 @@ python app.py
 - 若网络/代理受限，`imageio-ffmpeg` 可能安装失败，此时需安装系统 `ffmpeg` 并加入 `PATH`
 - 使用 `whisper --help` 与 `ffmpeg -version` 做基础自检
 
-### `ARK_API_KEY` 未设置
-
-```powershell
-$env:ARK_API_KEY="你的ark_key"
-python app.py
-```
 
 ## 📌 常用命令
 
