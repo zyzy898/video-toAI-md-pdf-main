@@ -20,6 +20,10 @@
     --shadow-lg: 0 18px 50px oklch(0.36 0.02 240 / 0.16);
     --hero-warm: oklch(0.82 0.11 75 / 0.38);
     --hero-cool: oklch(0.86 0.08 210 / 0.35);
+    --icon-primary: var(--primary);
+    --icon-on-primary: var(--primary-foreground);
+    --icon-muted: oklch(0.52 0.045 228);
+    --icon-danger: oklch(0.58 0.2 27);
 }
 
 * {
@@ -150,10 +154,11 @@ body::after {
 }
 
 .header-icon :is(i, svg[data-lucide], .lucide) {
-    color: white;
+    color: var(--icon-on-primary);
     width: 34px;
     height: 34px;
 }
+
 
 .header h1 {
     font-size: clamp(2rem, 3.4vw, 2.55rem);
@@ -238,7 +243,7 @@ body::after {
 .card-header :is(i, svg[data-lucide], .lucide) {
     width: 20px;
     height: 20px;
-    color: var(--primary);
+    color: var(--icon-primary);
 }
 
 .card-header h2 {
@@ -308,7 +313,7 @@ body::after {
 .history-delete {
     background: none;
     border: none;
-    color: var(--muted-foreground);
+    color: var(--icon-muted);
     cursor: pointer;
     padding: 0.25rem;
     border-radius: 0.25rem;
@@ -321,8 +326,8 @@ body::after {
 }
 
 .history-delete:hover {
-    color: #ef4444;
-    background: #fef2f2;
+    color: var(--icon-danger);
+    background: oklch(0.97 0.03 27);
 }
 
 .history-meta {
@@ -358,18 +363,97 @@ body::after {
     font-size: 0.875rem;
 }
 
-.history-refresh {
+.btn.btn-secondary.history-refresh {
     width: 100%;
     margin-top: 0.75rem;
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
+    border: 1px solid oklch(0.86 0.03 175);
+    background:
+        radial-gradient(circle at 18% 22%, oklch(0.98 0.02 95 / 0.7), transparent 52%),
+        linear-gradient(145deg, oklch(0.98 0.012 98), oklch(0.96 0.02 165));
+    box-shadow: 0 4px 12px oklch(0.34 0.03 235 / 0.08);
+    transition: transform 0.22s ease, box-shadow 0.22s ease, border-color 0.22s ease, background 0.22s ease;
 }
 
-.history-refresh.loading {
+.btn.btn-secondary.history-refresh::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(110deg, transparent 18%, oklch(1 0 0 / 0.4) 50%, transparent 82%);
+    transform: translateX(-140%);
+    opacity: 0;
     pointer-events: none;
-    opacity: 0.7;
+    z-index: 0;
+    transition: opacity 0.22s ease;
 }
 
-.history-refresh.loading .refresh-icon {
-    animation: spin 1s linear infinite;
+.btn.btn-secondary.history-refresh > * {
+    position: relative;
+    z-index: 1;
+}
+
+.btn.btn-secondary.history-refresh .refresh-icon {
+    color: var(--icon-primary);
+    transition: transform 0.3s ease, color 0.2s ease;
+}
+
+.btn.btn-secondary.history-refresh:hover:not(.loading) {
+    transform: translateY(-1px);
+    border-color: oklch(0.72 0.09 205);
+    background:
+        radial-gradient(circle at 16% 20%, oklch(0.95 0.045 205 / 0.5), transparent 56%),
+        linear-gradient(145deg, oklch(0.97 0.02 95), oklch(0.93 0.04 180));
+    box-shadow: 0 8px 18px oklch(0.45 0.06 220 / 0.16);
+}
+
+.btn.btn-secondary.history-refresh:hover:not(.loading)::before {
+    opacity: 1;
+    transform: translateX(140%);
+    transition: transform 0.75s ease, opacity 0.22s ease;
+}
+
+.btn.btn-secondary.history-refresh:hover:not(.loading) .refresh-icon {
+    transform: rotate(85deg) scale(1.04);
+}
+
+.btn.btn-secondary.history-refresh:active:not(.loading) {
+    transform: translateY(0);
+    box-shadow: 0 3px 10px oklch(0.45 0.05 220 / 0.12);
+}
+
+.btn.btn-secondary.history-refresh.loading {
+    pointer-events: none;
+    border-color: oklch(0.68 0.1 205);
+    background:
+        radial-gradient(circle at 16% 20%, oklch(0.93 0.04 205 / 0.6), transparent 54%),
+        linear-gradient(145deg, oklch(0.96 0.02 95), oklch(0.92 0.04 185));
+    box-shadow: 0 8px 20px oklch(0.45 0.07 220 / 0.18);
+}
+
+.btn.btn-secondary.history-refresh.loading::before {
+    opacity: 1;
+    animation: historyRefreshSweep 1.2s linear infinite;
+}
+
+.btn.btn-secondary.history-refresh.loading .refresh-icon {
+    color: var(--icon-primary);
+    animation: spin 0.85s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .btn.btn-secondary.history-refresh,
+    .btn.btn-secondary.history-refresh::before,
+    .btn.btn-secondary.history-refresh .refresh-icon {
+        transition: none;
+        animation: none;
+    }
+
+    .btn.btn-secondary.history-refresh:hover:not(.loading),
+    .btn.btn-secondary.history-refresh:active:not(.loading) {
+        transform: none;
+    }
 }
 
 /* Batch Upload */
@@ -471,14 +555,14 @@ body::after {
     border: 1px solid var(--border);
     border-radius: 0.4rem;
     background: transparent;
-    color: var(--muted-foreground);
+    color: var(--icon-muted);
     cursor: pointer;
     transition: all 0.2s ease;
 }
 
 .batch-file-delete:hover {
-    border-color: oklch(0.62 0.18 27);
-    color: oklch(0.58 0.2 27);
+    border-color: var(--icon-danger);
+    color: var(--icon-danger);
     background: oklch(0.97 0.03 27);
 }
 
@@ -709,7 +793,7 @@ body::after {
 .upload-icon :is(i, svg[data-lucide], .lucide) {
     width: 24px;
     height: 24px;
-    color: var(--primary);
+    color: var(--icon-primary);
 }
 
 .upload-area h3 {
@@ -743,7 +827,11 @@ body::after {
 }
 
 .file-badge :is(i, svg[data-lucide], .lucide) {
-    color: oklch(0.65 0.18 145);
+    color: var(--icon-primary);
+}
+
+.btn :is(i, svg[data-lucide], .lucide) {
+    color: inherit;
 }
 
 /* Buttons */
@@ -1065,14 +1153,14 @@ body::after {
 }
 
 .step-drag-handle {
-    color: var(--muted-foreground);
+    color: var(--icon-muted);
     cursor: grab;
     padding: 0.25rem;
     transition: color 0.2s ease, transform 0.2s ease;
 }
 
 .step-drag-handle:hover {
-    color: var(--primary);
+    color: var(--icon-primary);
     transform: scale(1.1);
 }
 
@@ -1148,7 +1236,7 @@ body::after {
 }
 
 .step-drag-handle {
-    color: var(--muted-foreground);
+    color: var(--icon-muted);
     cursor: grab;
     padding: 0.25rem;
 }
@@ -1427,6 +1515,16 @@ body::after {
 @keyframes spin {
     to {
         transform: rotate(360deg);
+    }
+}
+
+@keyframes historyRefreshSweep {
+    from {
+        transform: translateX(-140%);
+    }
+
+    to {
+        transform: translateX(140%);
     }
 }
 
