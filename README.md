@@ -80,7 +80,7 @@ video-toAI-md-pdf-main/
 - Python `3.8+`（建议 `3.10+`）
 - Node.js `18+`（建议 `20+`）
 - 可访问 Python 包源（用于安装 `ffmpeg-python` 与 `imageio-ffmpeg`）
-- 可用的 `ARK_API_KEY`
+- 可用的 `ARK_API_KEY (目前仅支持 doubao-seed-2-0-pro-260215)`
 
 ### 2) 安装依赖
 
@@ -146,12 +146,6 @@ python app.py
 - 若网络/代理受限，`imageio-ffmpeg` 可能安装失败，此时需安装系统 `ffmpeg` 并加入 `PATH`
 - 使用 `whisper --help` 与 `ffmpeg -version` 做基础自检
 
-### `ARK_API_KEY` 未设置
-
-```powershell
-$env:ARK_API_KEY="你的ark_key"
-python app.py
-```
 
 ## 📌 常用命令
 
