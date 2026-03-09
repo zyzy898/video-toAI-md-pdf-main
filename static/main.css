@@ -1388,34 +1388,107 @@ body::after {
 
 .progress-card {
     background: var(--card);
-    padding: 3rem;
+    padding: 1.5rem;
     border-radius: var(--radius);
     box-shadow: var(--shadow-lg);
-    text-align: center;
-    max-width: 400px;
+    text-align: left;
+    width: min(92vw, 460px);
+    max-width: 460px;
     animation: scaleIn 0.3s ease;
 }
 
+.progress-head {
+    display: flex;
+    align-items: center;
+    gap: 0.875rem;
+    margin-bottom: 0.875rem;
+}
+
 .progress-spinner {
-    width: 56px;
-    height: 56px;
+    width: 46px;
+    height: 46px;
     border: 3px solid var(--border);
     border-top-color: var(--primary);
     border-right-color: oklch(0.76 0.12 75);
     border-radius: 50%;
     animation: spin 1s linear infinite;
-    margin: 0 auto 1.5rem;
+    flex-shrink: 0;
 }
 
 .progress-card h3 {
-    font-size: 1.25rem;
+    font-size: 1.1rem;
     font-weight: 600;
-    margin-bottom: 0.5rem;
+    margin-bottom: 0.25rem;
 }
 
 .progress-card p {
     color: var(--muted-foreground);
-    font-size: 0.95rem;
+    font-size: 0.86rem;
+    line-height: 1.4;
+}
+
+.progress-board {
+    border: 1px solid oklch(0.87 0.025 150);
+    border-radius: 0.85rem;
+    background:
+        linear-gradient(145deg, oklch(0.985 0.008 100), oklch(0.965 0.02 145)),
+        var(--card);
+    padding: 0.9rem;
+}
+
+.progress-board-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0.55rem;
+}
+
+.progress-mode-tag {
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: oklch(0.38 0.12 178);
+    background: oklch(0.9 0.05 178 / 0.35);
+    padding: 0.22rem 0.5rem;
+    border-radius: 999px;
+}
+
+.progress-percent {
+    font-size: 1rem;
+    font-weight: 700;
+    color: var(--foreground);
+}
+
+.progress-bar {
+    height: 8px;
+    border-radius: 999px;
+    background: oklch(0.9 0.015 145);
+    overflow: hidden;
+    margin-bottom: 0.65rem;
+}
+
+.progress-bar-fill {
+    height: 100%;
+    border-radius: inherit;
+    width: 0;
+    background:
+        linear-gradient(90deg, oklch(0.63 0.18 190), oklch(0.72 0.16 82));
+    transition: width 0.28s ease;
+}
+
+.progress-board-meta {
+    font-size: 0.8rem;
+    color: var(--muted-foreground);
+    line-height: 1.35;
+}
+
+.progress-board-meta+.progress-board-meta {
+    margin-top: 0.3rem;
+}
+
+.progress-current-file {
+    color: oklch(0.34 0.07 170);
 }
 
 /* Error */

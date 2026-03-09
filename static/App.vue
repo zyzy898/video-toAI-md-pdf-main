@@ -333,9 +333,28 @@
 
         <div class="progress-overlay" :class="{ active: progressVisible }">
             <div class="progress-card">
-                <div class="progress-spinner"></div>
-                <h3 v-text="progressTitle"></h3>
-                <p v-text="progressText"></p>
+                <div class="progress-head">
+                    <div class="progress-spinner"></div>
+                    <div class="progress-head-text">
+                        <h3 v-text="progressTitle"></h3>
+                        <p v-text="progressText"></p>
+                    </div>
+                </div>
+                <div class="progress-board">
+                    <div class="progress-board-top">
+                        <span class="progress-mode-tag" v-text="progressModeText"></span>
+                        <span class="progress-percent" v-text="progressPercentText"></span>
+                    </div>
+                    <div class="progress-bar">
+                        <div class="progress-bar-fill" :style="{ width: `${progressBarPercent}%` }"></div>
+                    </div>
+                    <div v-if="progressCountText" class="progress-board-meta" v-text="progressCountText"></div>
+                    <div v-if="progressResultText" class="progress-board-meta" v-text="progressResultText"></div>
+                    <div v-if="progressStageText" class="progress-board-meta" v-text="`阶段: ${progressStageText}`"></div>
+                    <div v-if="progressBoard.currentFile" class="progress-board-meta progress-current-file"
+                        v-text="`当前文件: ${progressBoard.currentFile}`">
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -381,6 +400,18 @@ const VALID_VIDEO_EXTENSIONS = new Set([
 const WEB_SEARCH_ERROR_HINTS = ["toolnotopen", "web search", "\u8054\u7f51\u641c\u7d22"];
 const DEFAULT_UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024;
 const UPLOAD_RESUME_KEY_PREFIX = "video-upload-resume-v1";
+const PROGRESS_STAGE_LABELS = {
+    prepare: "准备中",
+    upload: "上传中",
+    subtitle: "字幕识别",
+    analysis: "内容分析",
+    screenshots: "截图生成",
+    vision: "视觉增强",
+    document: "文档生成",
+    pdf: "PDF 生成",
+    done: "已完成",
+    failed: "失败"
+};
 const LUCIDE_ICON_SET = {
     AlertCircle,
     Check,
@@ -448,6 +479,16 @@ export default {
             progressVisible: false,
             progressTitle: "处理中...",
             progressText: "请稍候",
+            progressBoard: {
+                mode: "",
+                percent: 0,
+                stage: "",
+                total: 0,
+                current: 0,
+                success: 0,
+                failed: 0,
+                currentFile: ""
+            },
 
             errorMessage: "",
             showErrorToast: false,
@@ -484,6 +525,58 @@ export default {
 
         hasAnyResult() {
             return this.hasSingleResult || this.hasBatchResult;
+        },
+
+        progressModeText() {
+            const mode = String(this.progressBoard.mode || "");
+            if (mode === "upload") {
+                return "上传进度";
+            }
+            if (mode === "single") {
+                return "单文件分析";
+            }
+            if (mode === "batch") {
+                return "批量分析";
+            }
+            return "任务进度";
+        },
+
+        progressBarPercent() {
+            const value = Number(this.progressBoard.percent);
+            if (!Number.isFinite(value)) {
+                return 0;
+            }
+            return Math.min(100, Math.max(0, Math.round(value)));
+        },
+
+        progressPercentText() {
+            return `${this.progressBarPercent}%`;
+        },
+
+        progressCountText() {
+            const total = Number(this.progressBoard.total) || 0;
+            if (total <= 0) {
+                return "";
+            }
+            const current = Math.min(Math.max(Number(this.progressBoard.current) || 0, 0), total);
+            return `进度 ${current}/${total}`;
+        },
+
+        progressResultText() {
+            const success = Math.max(0, Number(this.progressBoard.success) || 0);
+            const failed = Math.max(0, Number(this.progressBoard.failed) || 0);
+            if (success <= 0 && failed <= 0) {
+                return "";
+            }
+            return `成功 ${success} · 失败 ${failed}`;
+        },
+
+        progressStageText() {
+            const stage = String(this.progressBoard.stage || "").trim().toLowerCase();
+            if (!stage) {
+                return "";
+            }
+            return PROGRESS_STAGE_LABELS[stage] || stage;
         },
 
         batchUploadClass() {
@@ -544,6 +637,69 @@ export default {
     },
 
     methods: {
+        resetProgressBoard() {
+            this.progressBoard = {
+                mode: "",
+                percent: 0,
+                stage: "",
+                total: 0,
+                current: 0,
+                success: 0,
+                failed: 0,
+                currentFile: ""
+            };
+        },
+
+        updateProgressBoard(patch = {}) {
+            const next = {
+                ...this.progressBoard,
+                ...patch
+            };
+            const percent = Number(next.percent);
+            next.percent = Number.isFinite(percent)
+                ? Math.min(100, Math.max(0, percent))
+                : 0;
+            next.total = Math.max(0, Number(next.total) || 0);
+            next.current = Math.max(0, Number(next.current) || 0);
+            next.success = Math.max(0, Number(next.success) || 0);
+            next.failed = Math.max(0, Number(next.failed) || 0);
+            next.currentFile = String(next.currentFile || "");
+            this.progressBoard = next;
+        },
+
+        getStageProgress(stage) {
+            const normalized = String(stage || "").trim().toLowerCase();
+            if (!normalized) {
+                return 0;
+            }
+            const mapping = {
+                prepare: 8,
+                upload: 35,
+                subtitle: 28,
+                analysis: 55,
+                screenshots: 75,
+                vision: 84,
+                document: 90,
+                pdf: 96,
+                done: 100,
+                failed: 100
+            };
+            return mapping[normalized] ?? 0;
+        },
+
+        countBatchStatus() {
+            let success = 0;
+            let failed = 0;
+            this.batchFiles.forEach((item) => {
+                if (item.status === "success") {
+                    success += 1;
+                } else if (item.status === "failed") {
+                    failed += 1;
+                }
+            });
+            return { success, failed };
+        },
+
         renderIcons() {
             if (this.iconFrame) {
                 cancelAnimationFrame(this.iconFrame);
@@ -554,11 +710,13 @@ export default {
         showProgress(title, text) {
             this.progressTitle = title || "处理中...";
             this.progressText = text || "请稍候";
+            this.resetProgressBoard();
             this.progressVisible = true;
         },
 
         hideProgress() {
             this.progressVisible = false;
+            this.resetProgressBoard();
         },
 
         showError(message) {
@@ -632,6 +790,19 @@ export default {
 
         updateChunkUploadProgress(fileName, fileIndex, totalFiles, chunkIndex, totalChunks) {
             this.progressText = `正在上传 ${fileName}（文件 ${fileIndex}/${totalFiles}，分片 ${chunkIndex}/${totalChunks}）`;
+            const safeTotalFiles = Math.max(1, Number(totalFiles) || 1);
+            const safeTotalChunks = Math.max(1, Number(totalChunks) || 1);
+            const safeChunkIndex = Math.min(Math.max(Number(chunkIndex) || 0, 0), safeTotalChunks);
+            const completedFiles = Math.max(0, (Number(fileIndex) || 1) - 1);
+            const percent = ((completedFiles + safeChunkIndex / safeTotalChunks) / safeTotalFiles) * 100;
+            this.updateProgressBoard({
+                mode: "upload",
+                stage: "upload",
+                total: safeTotalFiles,
+                current: Math.min(Number(fileIndex) || 1, safeTotalFiles),
+                currentFile: fileName,
+                percent: Math.min(99, percent)
+            });
         },
 
         async uploadSingleFileWithResume(file, fileIndex, totalFiles) {
@@ -675,6 +846,13 @@ export default {
                     ? initData.received_chunks.map((item) => Number(item))
                     : []
             );
+            this.updateChunkUploadProgress(
+                file.name,
+                fileIndex,
+                totalFiles,
+                Math.min(receivedChunks.size, totalChunks),
+                totalChunks
+            );
 
             for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex += 1) {
                 if (receivedChunks.has(chunkIndex)) {
@@ -698,6 +876,14 @@ export default {
             }
 
             this.progressText = `正在合并 ${file.name}（文件 ${fileIndex}/${totalFiles}）...`;
+            this.updateProgressBoard({
+                stage: "done",
+                currentFile: file.name,
+                percent: Math.min(
+                    99,
+                    (((Math.max(1, Number(fileIndex) || 1)) / Math.max(1, Number(totalFiles) || 1)) * 100)
+                )
+            });
             const finalized = await this.fetchJson("/upload_chunk_finalize", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -721,6 +907,15 @@ export default {
             }
 
             this.showProgress("上传中", "正在上传视频文件（支持断点续传）...");
+            this.updateProgressBoard({
+                mode: "upload",
+                stage: "prepare",
+                total: files.length,
+                current: 0,
+                success: 0,
+                failed: 0,
+                percent: 0
+            });
             try {
                 const uploadedItems = [];
                 const errors = [];
@@ -735,8 +930,38 @@ export default {
                             status: "pending",
                             error: ""
                         });
+                        const successCount = uploadedItems.length;
+                        const failedCount = errors.length;
+                        const completedCount = successCount + failedCount;
+                        this.updateProgressBoard({
+                            mode: "upload",
+                            stage: completedCount >= files.length ? "done" : "upload",
+                            total: files.length,
+                            current: completedCount,
+                            success: successCount,
+                            failed: failedCount,
+                            currentFile: file.name,
+                            percent: completedCount >= files.length
+                                ? 100
+                                : Math.min(99, (completedCount / files.length) * 100)
+                        });
                     } catch (error) {
                         errors.push(`${file.name}: ${error.message}`);
+                        const successCount = uploadedItems.length;
+                        const failedCount = errors.length;
+                        const completedCount = successCount + failedCount;
+                        this.updateProgressBoard({
+                            mode: "upload",
+                            stage: "failed",
+                            total: files.length,
+                            current: completedCount,
+                            success: successCount,
+                            failed: failedCount,
+                            currentFile: file.name,
+                            percent: completedCount >= files.length
+                                ? 100
+                                : Math.min(99, (completedCount / files.length) * 100)
+                        });
                     }
                 }
 
@@ -831,10 +1056,27 @@ export default {
             try {
                 const progress = await this.fetchJson("/single_progress");
                 const currentFile = String(progress.current_file || "");
+                const status = String(progress.status || "").trim().toLowerCase();
+                const stage = String(progress.stage || "").trim().toLowerCase();
+                const stagePercent = this.getStageProgress(stage);
+                const isDone = status === "completed" || stage === "done";
+                const isFailed = status === "failed" || stage === "failed";
+                const percent = isDone || isFailed ? 100 : stagePercent;
 
                 if (this.progressVisible) {
                     this.progressText = this.buildSingleProgressMessage(progress);
                 }
+
+                this.updateProgressBoard({
+                    mode: "single",
+                    stage,
+                    total: 1,
+                    current: isDone || isFailed ? 1 : 0,
+                    success: isDone ? 1 : 0,
+                    failed: isFailed ? 1 : 0,
+                    currentFile,
+                    percent
+                });
 
                 if (!currentFile) {
                     return;
@@ -872,10 +1114,37 @@ export default {
             try {
                 const progress = await this.fetchJson("/batch_progress");
                 const currentFile = String(progress.current_file || "");
+                const status = String(progress.status || "").trim().toLowerCase();
+                const stage = String(progress.stage || "").trim().toLowerCase();
+                const total = Number(progress.total) || this.batchFiles.length;
+                const current = Number(progress.current) || 0;
+                const stagePercent = this.getStageProgress(stage);
+                const { success, failed } = this.countBatchStatus();
+                let percent = 0;
+                if (total > 0) {
+                    const doneFiles = Math.max(0, current - 1);
+                    percent = ((doneFiles + stagePercent / 100) / total) * 100;
+                }
+                if (status === "completed" || stage === "done") {
+                    percent = 100;
+                } else {
+                    percent = Math.min(99, percent);
+                }
 
                 if (this.progressVisible) {
                     this.progressText = this.buildProgressMessage(progress);
                 }
+
+                this.updateProgressBoard({
+                    mode: "batch",
+                    stage,
+                    total,
+                    current: Math.min(Math.max(current, 0), Math.max(total, 0)),
+                    success,
+                    failed,
+                    currentFile,
+                    percent
+                });
 
                 if (!currentFile) {
                     return;
@@ -920,6 +1189,16 @@ export default {
             this.stopBatchProgressPolling();
             this.isAnalyzing = true;
             this.showProgress("单文件处理中", "正在分析视频，请稍候...");
+            this.updateProgressBoard({
+                mode: "single",
+                stage: "prepare",
+                total: 1,
+                current: 0,
+                success: 0,
+                failed: 0,
+                currentFile: singleFile.filename || "",
+                percent: 5
+            });
             this.startSingleProgressPolling();
             let shouldRevealResults = false;
 
@@ -953,6 +1232,16 @@ export default {
                 this.batchResultData = null;
                 this.isEditMode = false;
                 this.editedSteps = [];
+                this.updateProgressBoard({
+                    mode: "single",
+                    stage: "done",
+                    total: 1,
+                    current: 1,
+                    success: 1,
+                    failed: 0,
+                    currentFile: singleFile.filename || "",
+                    percent: 100
+                });
                 shouldRevealResults = true;
                 await this.loadHistory();
             } catch (error) {
@@ -969,6 +1258,16 @@ export default {
                         status: "failed",
                         error: message
                     };
+                });
+                this.updateProgressBoard({
+                    mode: "single",
+                    stage: "failed",
+                    total: 1,
+                    current: 1,
+                    success: 0,
+                    failed: 1,
+                    currentFile: singleFile.filename || "",
+                    percent: 100
                 });
                 this.showError(`单文件分析失败: ${message}`);
             } finally {
@@ -1000,6 +1299,15 @@ export default {
             this.stopSingleProgressPolling();
             this.isAnalyzing = true;
             this.showProgress("批量处理中", "正在逐个分析视频，请稍候...");
+            this.updateProgressBoard({
+                mode: "batch",
+                stage: "prepare",
+                total: this.batchFiles.length,
+                current: 0,
+                success: 0,
+                failed: 0,
+                percent: 0
+            });
             this.startBatchProgressPolling();
             let shouldRevealResults = false;
 
@@ -1039,9 +1347,29 @@ export default {
                 this.resultData = null;
                 this.isEditMode = false;
                 this.editedSteps = [];
+                this.updateProgressBoard({
+                    mode: "batch",
+                    stage: "done",
+                    total: Number(data?.summary?.total) || this.batchFiles.length,
+                    current: Number(data?.summary?.total) || this.batchFiles.length,
+                    success: Number(data?.summary?.success) || 0,
+                    failed: Number(data?.summary?.failed) || 0,
+                    currentFile: "",
+                    percent: 100
+                });
                 shouldRevealResults = true;
                 await this.loadHistory();
             } catch (error) {
+                const { success, failed } = this.countBatchStatus();
+                this.updateProgressBoard({
+                    mode: "batch",
+                    stage: "failed",
+                    total: this.batchFiles.length,
+                    current: success + failed,
+                    success,
+                    failed,
+                    percent: 100
+                });
                 this.showError(`批量分析失败: ${error.message}`);
             } finally {
                 this.stopBatchProgressPolling();
