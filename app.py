@@ -10,6 +10,7 @@ from io import BytesIO
 from pathlib import Path
 from threading import Lock, RLock
 from typing import Any, Callable, Dict, List, Tuple
+from uuid import uuid4
 
 from flask import Flask, jsonify, render_template, request, send_file, send_from_directory
 from werkzeug.utils import secure_filename
@@ -23,6 +24,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 UPLOAD_ROOT = (PROJECT_ROOT / "uploads").resolve()
 OUTPUT_ROOT = (PROJECT_ROOT / "outputs").resolve()
 HISTORY_PATH = (PROJECT_ROOT / "history.json").resolve()
+UPLOAD_SESSION_ROOT = (UPLOAD_ROOT / ".upload_sessions").resolve()
 
 app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024
 app.config["UPLOAD_FOLDER"] = str(UPLOAD_ROOT)
@@ -48,12 +50,16 @@ MAX_HISTORY = 50
 MAX_VISION_CALLS = 10
 FPS_MIN = 0.1
 FPS_MAX = 10.0
+DEFAULT_UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024
+MAX_UPLOAD_CHUNK_SIZE = 32 * 1024 * 1024
 
 UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
 OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
+UPLOAD_SESSION_ROOT.mkdir(parents=True, exist_ok=True)
 
 logger = logging.getLogger(__name__)
 history_lock = RLock()
+upload_session_lock = RLock()
 batch_progress_lock = Lock()
 batch_progress: Dict[str, Any] = {
     "total": 0,
@@ -229,6 +235,68 @@ def _build_unique_upload_path(filename: str) -> Path:
     return candidate
 
 
+def _normalize_upload_id(raw_upload_id: Any) -> str:
+    upload_id = secure_filename(str(raw_upload_id or "")).strip()
+    if not upload_id:
+        return ""
+    if len(upload_id) > 120:
+        raise ValueError("upload_id 无效")
+    return upload_id
+
+
+def _upload_session_json_path(upload_id: str) -> Path:
+    session_path = (UPLOAD_SESSION_ROOT / f"{upload_id}.json").resolve(strict=False)
+    _assert_within(session_path, UPLOAD_SESSION_ROOT, "upload_id")
+    return session_path
+
+
+def _upload_session_temp_path(upload_id: str) -> Path:
+    temp_path = (UPLOAD_SESSION_ROOT / f"{upload_id}.part").resolve(strict=False)
+    _assert_within(temp_path, UPLOAD_SESSION_ROOT, "upload_id")
+    return temp_path
+
+
+def _normalize_received_chunks(raw_chunks: Any, total_chunks: int) -> List[int]:
+    if total_chunks <= 0 or not isinstance(raw_chunks, list):
+        return []
+    received: set[int] = set()
+    for item in raw_chunks:
+        idx = _safe_int(item, -1)
+        if 0 <= idx < total_chunks:
+            received.add(idx)
+    return sorted(received)
+
+
+def _load_upload_session(upload_id: str) -> Dict[str, Any] | None:
+    session_path = _upload_session_json_path(upload_id)
+    if not session_path.exists():
+        return None
+    try:
+        with open(session_path, "r", encoding="utf-8") as f:
+            session = json.load(f)
+        return session if isinstance(session, dict) else None
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _save_upload_session(upload_id: str, session: Dict[str, Any]) -> None:
+    session_path = _upload_session_json_path(upload_id)
+    tmp_path = session_path.with_suffix(".tmp")
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(session, f, ensure_ascii=False, indent=2)
+    tmp_path.replace(session_path)
+
+
+def _delete_upload_session(upload_id: str) -> None:
+    for path in (_upload_session_json_path(upload_id), _upload_session_temp_path(upload_id)):
+        if not path.exists():
+            continue
+        try:
+            path.unlink()
+        except OSError:
+            logger.warning("删除上传会话文件失败: %s", path)
+
+
 def _create_unique_output_dir(video_path: Path) -> Path:
     base_name = secure_filename(video_path.stem) or "video"
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -377,6 +445,200 @@ def upload_file():
     save_path = _build_unique_upload_path(file.filename)
     file.save(str(save_path))
     return jsonify({"filename": save_path.name, "filepath": str(save_path)})
+
+
+@app.route("/upload_chunk_init", methods=["POST"])
+def upload_chunk_init():
+    data = _json_payload()
+    filename = str(data.get("filename", "")).strip()
+    if not filename:
+        return jsonify({"error": "文件名不能为空"}), 400
+    if not allowed_file(filename):
+        return jsonify({"error": "不支持的文件格式"}), 400
+
+    total_size = _safe_int(data.get("total_size"), 0, 1)
+    if total_size <= 0:
+        return jsonify({"error": "文件大小无效"}), 400
+
+    requested_chunk_size = _safe_int(
+        data.get("chunk_size", DEFAULT_UPLOAD_CHUNK_SIZE),
+        DEFAULT_UPLOAD_CHUNK_SIZE,
+        256 * 1024,
+        MAX_UPLOAD_CHUNK_SIZE,
+    )
+    file_key = str(data.get("file_key", "")).strip()
+
+    try:
+        requested_upload_id = _normalize_upload_id(data.get("upload_id", ""))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with upload_session_lock:
+        session: Dict[str, Any] | None = None
+        upload_id = requested_upload_id
+
+        if upload_id:
+            session = _load_upload_session(upload_id)
+            if session is not None:
+                same_name = str(session.get("filename", "")) == filename
+                same_size = _safe_int(session.get("total_size"), -1) == total_size
+                same_key = not file_key or str(session.get("file_key", "")) == file_key
+                if not (same_name and same_size and same_key):
+                    session = None
+
+        if session is None:
+            upload_id = uuid4().hex
+            total_chunks = max(1, (total_size + requested_chunk_size - 1) // requested_chunk_size)
+            session = {
+                "upload_id": upload_id,
+                "filename": filename,
+                "file_key": file_key,
+                "total_size": total_size,
+                "chunk_size": requested_chunk_size,
+                "total_chunks": total_chunks,
+                "received_chunks": [],
+                "created_at": now_text,
+                "updated_at": now_text,
+            }
+            _save_upload_session(upload_id, session)
+        else:
+            total_chunks = _safe_int(session.get("total_chunks"), 1, 1)
+            session["received_chunks"] = _normalize_received_chunks(
+                session.get("received_chunks", []), total_chunks
+            )
+            session["updated_at"] = now_text
+            _save_upload_session(upload_id, session)
+
+    return jsonify(
+        {
+            "success": True,
+            "upload_id": upload_id,
+            "chunk_size": _safe_int(session.get("chunk_size"), DEFAULT_UPLOAD_CHUNK_SIZE, 1),
+            "total_chunks": _safe_int(session.get("total_chunks"), 1, 1),
+            "received_chunks": session.get("received_chunks", []),
+        }
+    )
+
+
+@app.route("/upload_chunk", methods=["POST"])
+def upload_chunk():
+    if "chunk" not in request.files:
+        return jsonify({"error": "缺少分片文件"}), 400
+
+    try:
+        upload_id = _normalize_upload_id(request.form.get("upload_id", ""))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    if not upload_id:
+        return jsonify({"error": "upload_id 不能为空"}), 400
+
+    chunk_index = _safe_int(request.form.get("chunk_index"), -1)
+    if chunk_index < 0:
+        return jsonify({"error": "chunk_index 无效"}), 400
+
+    chunk_file = request.files["chunk"]
+    chunk_data = chunk_file.read() or b""
+
+    with upload_session_lock:
+        session = _load_upload_session(upload_id)
+        if session is None:
+            return jsonify({"error": "上传会话不存在，请重新开始上传"}), 404
+
+        total_chunks = _safe_int(session.get("total_chunks"), 0, 1)
+        chunk_size = _safe_int(
+            session.get("chunk_size"), DEFAULT_UPLOAD_CHUNK_SIZE, 1, MAX_UPLOAD_CHUNK_SIZE
+        )
+        total_size = _safe_int(session.get("total_size"), 0, 1)
+
+        if chunk_index >= total_chunks:
+            return jsonify({"error": "chunk_index 超出范围"}), 400
+
+        offset = chunk_index * chunk_size
+        if offset >= total_size:
+            return jsonify({"error": "分片偏移量无效"}), 400
+
+        expected_max_size = min(chunk_size, total_size - offset)
+        if len(chunk_data) == 0 and expected_max_size > 0:
+            return jsonify({"error": "分片内容为空"}), 400
+        if len(chunk_data) > expected_max_size:
+            return jsonify({"error": "分片大小超出限制"}), 400
+
+        temp_path = _upload_session_temp_path(upload_id)
+        temp_path.parent.mkdir(parents=True, exist_ok=True)
+        if not temp_path.exists():
+            with open(temp_path, "wb"):
+                pass
+
+        with open(temp_path, "r+b") as f:
+            f.seek(offset)
+            f.write(chunk_data)
+
+        received_chunks = set(
+            _normalize_received_chunks(session.get("received_chunks", []), total_chunks)
+        )
+        received_chunks.add(chunk_index)
+        session["received_chunks"] = sorted(received_chunks)
+        session["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        _save_upload_session(upload_id, session)
+
+    return jsonify(
+        {
+            "success": True,
+            "upload_id": upload_id,
+            "uploaded_chunks": len(session["received_chunks"]),
+            "total_chunks": total_chunks,
+        }
+    )
+
+
+@app.route("/upload_chunk_finalize", methods=["POST"])
+def upload_chunk_finalize():
+    data = _json_payload()
+    try:
+        upload_id = _normalize_upload_id(data.get("upload_id", ""))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    if not upload_id:
+        return jsonify({"error": "upload_id 不能为空"}), 400
+
+    with upload_session_lock:
+        session = _load_upload_session(upload_id)
+        if session is None:
+            return jsonify({"error": "上传会话不存在，请重新开始上传"}), 404
+
+        filename = str(session.get("filename", "")).strip()
+        if not filename or not allowed_file(filename):
+            return jsonify({"error": "原始文件名无效"}), 400
+
+        total_chunks = _safe_int(session.get("total_chunks"), 0, 1)
+        total_size = _safe_int(session.get("total_size"), 0, 1)
+        received_chunks = _normalize_received_chunks(session.get("received_chunks", []), total_chunks)
+
+        if len(received_chunks) < total_chunks:
+            received_set = set(received_chunks)
+            missing_chunks = [i for i in range(total_chunks) if i not in received_set][:10]
+            missing_text = ",".join(str(i) for i in missing_chunks)
+            suffix = "..." if len(received_chunks) + len(missing_chunks) < total_chunks else ""
+            return jsonify({"error": f"分片未上传完整，缺少分片: {missing_text}{suffix}"}), 400
+
+        temp_path = _upload_session_temp_path(upload_id)
+        if not temp_path.exists():
+            return jsonify({"error": "临时文件不存在，请重新上传"}), 400
+
+        if temp_path.stat().st_size < total_size:
+            return jsonify({"error": "文件尚未完整上传，请继续上传缺失分片"}), 400
+
+        save_path = _build_unique_upload_path(filename)
+        shutil.move(str(temp_path), str(save_path))
+        if save_path.stat().st_size > total_size:
+            with open(save_path, "r+b") as f:
+                f.truncate(total_size)
+
+        _delete_upload_session(upload_id)
+
+    return jsonify({"success": True, "filename": save_path.name, "filepath": str(save_path)})
 
 
 @app.route("/analyze", methods=["POST"])

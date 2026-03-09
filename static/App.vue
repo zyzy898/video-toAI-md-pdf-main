@@ -340,7 +340,9 @@
         </div>
 
         <div class="error-toast" :class="{ show: showErrorToast }">
-            <i data-lucide="alert-circle"></i>
+            <i data-lucide="alert-circle">
+                <svg t="1773063527672" class="icon" viewBox="0 0 1026 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="43601" width="200" height="200"><path d="M1004.657 801.716 602.263 91.599c-49.213-86.817-129.646-86.817-178.866 0L21.004 801.716c-49.207 86.906-8.949 157.798 89.388 157.798l804.877 0C1013.606 959.514 1053.825 888.622 1004.657 801.716zM544.635 832.216l-63.649 0 0-63.649 63.649 0L544.635 832.216zM544.635 641.27l-63.649 0L480.986 259.377l63.649 0L544.635 641.27z" p-id="43602" fill="#d81e06"></path></svg>
+            </i>
             <span v-text="errorMessage"></span>
         </div>
     </div>
@@ -348,7 +350,28 @@
 
 <script>
 import DOMPurify from "dompurify";
-import { createIcons } from "lucide";
+import {
+    AlertCircle,
+    Check,
+    Download,
+    Edit2,
+    FileText,
+    FileVideo,
+    FolderPlus,
+    GripVertical,
+    History,
+    Layers,
+    ListOrdered,
+    Play,
+    Plus,
+    RefreshCw,
+    Settings,
+    Trash2,
+    Upload,
+    Video,
+    X,
+    createIcons
+} from "lucide";
 import { marked } from "marked";
 
 const VALID_VIDEO_EXTENSIONS = new Set([
@@ -356,6 +379,29 @@ const VALID_VIDEO_EXTENSIONS = new Set([
 ]);
 
 const WEB_SEARCH_ERROR_HINTS = ["toolnotopen", "web search", "\u8054\u7f51\u641c\u7d22"];
+const DEFAULT_UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024;
+const UPLOAD_RESUME_KEY_PREFIX = "video-upload-resume-v1";
+const LUCIDE_ICON_SET = {
+    AlertCircle,
+    Check,
+    Download,
+    Edit2,
+    FileText,
+    FileVideo,
+    FolderPlus,
+    GripVertical,
+    History,
+    Layers,
+    ListOrdered,
+    Play,
+    Plus,
+    RefreshCw,
+    Settings,
+    Trash2,
+    Upload,
+    Video,
+    X
+};
 
 const basename = (pathValue) => {
     if (!pathValue) {
@@ -502,7 +548,7 @@ export default {
             if (this.iconFrame) {
                 cancelAnimationFrame(this.iconFrame);
             }
-            this.iconFrame = requestAnimationFrame(() => createIcons());
+            this.iconFrame = requestAnimationFrame(() => createIcons({ icons: LUCIDE_ICON_SET }));
         },
 
         showProgress(title, text) {
@@ -577,6 +623,96 @@ export default {
             await this.uploadBatchFiles(files);
         },
 
+        buildUploadResumeKey(file) {
+            const filename = String(file?.name || "");
+            const size = Number(file?.size || 0);
+            const lastModified = Number(file?.lastModified || 0);
+            return `${UPLOAD_RESUME_KEY_PREFIX}:${filename}:${size}:${lastModified}`;
+        },
+
+        updateChunkUploadProgress(fileName, fileIndex, totalFiles, chunkIndex, totalChunks) {
+            this.progressText = `正在上传 ${fileName}（文件 ${fileIndex}/${totalFiles}，分片 ${chunkIndex}/${totalChunks}）`;
+        },
+
+        async uploadSingleFileWithResume(file, fileIndex, totalFiles) {
+            const resumeKey = this.buildUploadResumeKey(file);
+            let uploadId = "";
+            try {
+                uploadId = window.localStorage.getItem(resumeKey) || "";
+            } catch (_error) {
+                uploadId = "";
+            }
+
+            const initPayload = {
+                filename: file.name,
+                total_size: file.size,
+                chunk_size: DEFAULT_UPLOAD_CHUNK_SIZE,
+                upload_id: uploadId,
+                file_key: resumeKey
+            };
+
+            const initData = await this.fetchJson("/upload_chunk_init", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(initPayload)
+            });
+
+            uploadId = String(initData.upload_id || "");
+            if (!uploadId) {
+                throw new Error("初始化上传会话失败");
+            }
+
+            try {
+                window.localStorage.setItem(resumeKey, uploadId);
+            } catch (_error) {
+                // ignore localStorage quota/availability errors
+            }
+
+            const chunkSize = Number(initData.chunk_size) || DEFAULT_UPLOAD_CHUNK_SIZE;
+            const totalChunks = Number(initData.total_chunks) || 1;
+            const receivedChunks = new Set(
+                Array.isArray(initData.received_chunks)
+                    ? initData.received_chunks.map((item) => Number(item))
+                    : []
+            );
+
+            for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex += 1) {
+                if (receivedChunks.has(chunkIndex)) {
+                    continue;
+                }
+
+                const start = chunkIndex * chunkSize;
+                const end = Math.min(file.size, start + chunkSize);
+                const chunkBlob = file.slice(start, end);
+
+                const formData = new FormData();
+                formData.append("upload_id", uploadId);
+                formData.append("chunk_index", String(chunkIndex));
+                formData.append("chunk", chunkBlob);
+
+                this.updateChunkUploadProgress(file.name, fileIndex, totalFiles, chunkIndex + 1, totalChunks);
+                await this.fetchJson("/upload_chunk", {
+                    method: "POST",
+                    body: formData
+                });
+            }
+
+            this.progressText = `正在合并 ${file.name}（文件 ${fileIndex}/${totalFiles}）...`;
+            const finalized = await this.fetchJson("/upload_chunk_finalize", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ upload_id: uploadId })
+            });
+
+            try {
+                window.localStorage.removeItem(resumeKey);
+            } catch (_error) {
+                // ignore localStorage errors
+            }
+
+            return finalized;
+        },
+
         async uploadBatchFiles(fileList) {
             const files = Array.from(fileList || []).filter((file) => isValidVideo(file.name));
             if (files.length === 0) {
@@ -584,28 +720,32 @@ export default {
                 return;
             }
 
-            const formData = new FormData();
-            files.forEach((file) => formData.append("files", file));
-
-            this.showProgress("上传中", "正在上传批量视频文件...");
+            this.showProgress("上传中", "正在上传视频文件（支持断点续传）...");
             try {
-                const data = await this.fetchJson("/upload_batch", {
-                    method: "POST",
-                    body: formData
-                });
+                const uploadedItems = [];
+                const errors = [];
 
-                if (Array.isArray(data.errors) && data.errors.length > 0) {
-                    this.showError(data.errors.join("；"));
+                for (let idx = 0; idx < files.length; idx += 1) {
+                    const file = files[idx];
+                    try {
+                        const uploaded = await this.uploadSingleFileWithResume(file, idx + 1, files.length);
+                        uploadedItems.push({
+                            filename: uploaded.filename,
+                            filepath: uploaded.filepath,
+                            status: "pending",
+                            error: ""
+                        });
+                    } catch (error) {
+                        errors.push(`${file.name}: ${error.message}`);
+                    }
                 }
 
-                const uploadedItems = (data.uploaded || []).map((item) => ({
-                    filename: item.filename,
-                    filepath: item.filepath,
-                    status: "pending",
-                    error: ""
-                }));
-
-                this.batchFiles = [...this.batchFiles, ...uploadedItems];
+                if (uploadedItems.length > 0) {
+                    this.batchFiles = [...this.batchFiles, ...uploadedItems];
+                }
+                if (errors.length > 0) {
+                    this.showError(errors.join("；"));
+                }
             } catch (error) {
                 this.showError(`批量上传失败: ${error.message}`);
             } finally {
