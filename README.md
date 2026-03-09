@@ -1,16 +1,17 @@
-# 视频转文档 - AI 视频总结工具
+# 🎬 视频转文档 - AI 视频总结工具
 
-将视频自动分析为图文操作文档，输出 `Markdown` 与 `PDF`，支持单视频和批量处理。
+将视频自动分析为图文操作文档，输出 `Markdown` 与 `PDF`，支持单视频与批量处理。  
+适合做教程沉淀、操作留档、流程复盘。📝
 
-## 项目简介
+## ✨ 项目简介
 
 项目由 `Flask` 后端和 `Vue 3 + Vite` 前端组成：
 
-- 后端负责上传、分析、文档生成、下载与历史记录管理。
-- 前端负责参数配置、上传交互、结果展示与文档编辑。
-- 通过 `Whisper + LLM + ffmpeg-python` 完成字幕识别、步骤抽取和截图增强。
+- 后端负责上传、分析、文档生成、下载与历史记录管理
+- 前端负责参数配置、上传交互、结果展示与步骤编辑
+- 通过 `Whisper + LLM + ffmpeg-python` 完成字幕识别、步骤抽取和截图增强
 
-## 核心功能
+## ✅ 核心功能
 
 - 单视频分析与批量分析
 - 字幕驱动模式与视频直传模式
@@ -19,13 +20,39 @@
 - 历史记录查看、回放与删除
 - 导出 Markdown / PDF，支持 ZIP 批量下载
 
-## 技术栈
+## 🔄 工作流程
+
+### 业务流程（用户视角）
+
+1. 上传一个或多个视频文件 📤  
+2. 配置模型参数（Whisper 模型、视频模式、Web 搜索、FPS 等）⚙️  
+3. 发起分析任务，系统逐个处理视频 🤖  
+4. 生成步骤化结果，可在线编辑并重新生成文档 ✍️  
+5. 下载单个或批量结果（ZIP / Markdown / PDF）📦  
+6. 自动写入历史记录，支持后续回看与复用 🗂️  
+
+### 处理流程（系统视角）
+
+```mermaid
+flowchart TD
+    A[上传视频] --> B{分析模式}
+    B -->|字幕驱动| C[Whisper 语音转写]
+    B -->|视频直传| D[抽帧与视觉理解]
+    C --> E[LLM 抽取步骤]
+    D --> E
+    E --> F[低置信度步骤 AI 看图增强（可选）]
+    F --> G[生成 Markdown]
+    G --> H[导出 PDF / ZIP]
+    H --> I[写入 history.json]
+```
+
+## 🧩 技术栈
 
 - 后端：`Python`、`Flask`
 - 前端：`Vue 3`、`Vite`
 - 多媒体/AI：`Whisper`、`ffmpeg-python`、`imageio-ffmpeg`、`ARK LLM`
 
-## 目录结构
+## 📁 目录结构
 
 ```text
 video-toAI-md-pdf-main/
@@ -46,44 +73,39 @@ video-toAI-md-pdf-main/
 └─ history.json               # 历史记录
 ```
 
-## 环境要求
+## 🚀 快速开始
+
+### 1) 环境要求
 
 - Python `3.8+`（建议 `3.10+`）
 - Node.js `18+`（建议 `20+`）
-- 建议可访问 Python 包源（用于安装 `ffmpeg-python` 与 `imageio-ffmpeg`）
+- 可访问 Python 包源（用于安装 `ffmpeg-python` 与 `imageio-ffmpeg`）
 - 可用的 `ARK_API_KEY`
 
-## 安装依赖
+### 2) 安装依赖
 
 ```powershell
 pip install -r requirements.txt
 npm install
 ```
 
-## 环境变量
+### 3) 环境变量
 
-<!-- - `ARK_API_KEY`：必填，后端分析模型调用使用。 -->
-<!-- - `VITE_DEV_SERVER`：可选，仅开发模式需要，用于告诉 Flask 从 Vite 开发服务器加载前端资源。 -->
+- `ARK_API_KEY`：必填，后端分析模型调用使用
+- `VITE_DEV_SERVER`：可选，仅开发模式使用（让 Flask 指向 Vite Dev Server）
 
 PowerShell 示例：
 
 ```powershell
-# $env:ARK_API_KEY="你的ark_key"
-# $env:VITE_DEV_SERVER="http://127.0.0.1:5173"
+$env:ARK_API_KEY="你的ark_key"
+$env:VITE_DEV_SERVER="http://127.0.0.1:5173"
 ```
 
-## ffmpeg 运行机制
+### 4) 启动方式
 
-- 截图链路优先使用 `ffmpeg-python`。
-- 程序会优先尝试 `imageio-ffmpeg` 提供的 ffmpeg 二进制，并自动注入运行时 PATH。
-- 若 `imageio-ffmpeg` 不可用，会自动回退到系统 `ffmpeg`。
-- 若两者都不可用，截图步骤会失败，进而影响文档图片与部分分析结果。
+#### 开发模式（推荐）
 
-## 启动方式
-
-### 1) 开发模式（推荐）
-
-开发模式需要两个终端同时运行：
+需要两个终端同时运行：
 
 终端 A（前端热更新）：
 
@@ -94,17 +116,13 @@ npm run dev -- --host 127.0.0.1 --port 5173 --strictPort
 终端 B（后端服务）：
 
 ```powershell
-# $env:VITE_DEV_SERVER="http://127.0.0.1:5173"
+$env:VITE_DEV_SERVER="http://127.0.0.1:5173"
 python app.py
 ```
 
-浏览器访问：
+访问：`http://127.0.0.1:5000`
 
-`http://127.0.0.1:5000`
-
-### 2) 生产模式（本地构建后运行）
-
-先构建前端，再仅启动 Flask：
+#### 生产模式（本地构建后运行）
 
 ```powershell
 npm run build
@@ -112,44 +130,42 @@ Remove-Item Env:VITE_DEV_SERVER -ErrorAction SilentlyContinue
 python app.py
 ```
 
-浏览器访问：
+访问：`http://127.0.0.1:5000`
 
-`http://127.0.0.1:5000`
+## 🎞️ ffmpeg 运行机制
 
-## 只启动 app.py 可以吗？
+- 截图链路优先使用 `ffmpeg-python`
+- 程序优先尝试 `imageio-ffmpeg` 提供的 ffmpeg 二进制，并自动注入运行时 PATH
+- 若 `imageio-ffmpeg` 不可用，会自动回退到系统 `ffmpeg`
+- 若两者都不可用，截图步骤会失败，影响文档图片与部分分析结果
 
-- 开发模式：不可以。需要同时启动 Vite（否则模板引用的前端资源不可用）。
-- 生产模式：可以。前提是已经执行 `npm run build`，并且 `static/dist/app.js` 存在。
-
-## 常见问题
+## ❓ 常见问题
 
 ### 找不到 `127.0.0.1` 页面
 
-- 确认 `python app.py` 是否正常启动（默认端口 `5000`）。
-- 若在开发模式，确认 `npm run dev` 也在运行（默认端口 `5173`）。
-- 检查是否访问了正确地址：`http://127.0.0.1:5000`。
+- 确认 `python app.py` 是否正常启动（默认端口 `5000`）
+- 开发模式下确认 `npm run dev` 同时运行（默认端口 `5173`）
+- 检查访问地址是否为 `http://127.0.0.1:5000`
 
 ### 页面空白或前端资源 404
 
-- 开发模式：确认 `VITE_DEV_SERVER` 值与 Vite 端口一致。
-- 生产模式：确认已执行 `npm run build`，并生成 `static/dist/app.js`。
+- 开发模式：确认 `VITE_DEV_SERVER` 值与 Vite 端口一致
+- 生产模式：确认已执行 `npm run build`，且 `static/dist/app.js` 已生成
 
 ### `whisper` 或 `ffmpeg` 相关错误
 
-- 优先确认已安装 Python 依赖：`pip install -r requirements.txt`。
-- 若网络/代理受限，`imageio-ffmpeg` 可能安装失败，此时需安装系统 `ffmpeg` 并加入 PATH。
-- 使用 `whisper --help` 和 `ffmpeg -version` 做基础自检。
+- 先确认安装依赖：`pip install -r requirements.txt`
+- 若网络/代理受限，`imageio-ffmpeg` 可能安装失败，此时需安装系统 `ffmpeg` 并加入 `PATH`
+- 使用 `whisper --help` 与 `ffmpeg -version` 做基础自检
 
 ### `ARK_API_KEY` 未设置
-
-- 在当前终端执行：
 
 ```powershell
 $env:ARK_API_KEY="你的ark_key"
 python app.py
 ```
 
-## 常用命令
+## 📌 常用命令
 
 ```powershell
 npm run dev
@@ -158,6 +174,6 @@ npm run preview
 python app.py
 ```
 
-## 说明
+## ⚠️ 说明
 
-本项目当前主要用于学习与内部验证场景，建议在可控环境中使用。
+本项目目前主要用于学习与内部验证场景，建议在可控环境中使用。
