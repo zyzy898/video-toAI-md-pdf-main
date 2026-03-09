@@ -144,7 +144,13 @@
                                         <i data-lucide="file-video"></i>
                                         <span :title="item.filename" v-text="item.filename"></span>
                                     </div>
-                                    <span class="batch-file-status" :class="item.status" v-text="batchStatusText(item.status)"></span>
+                                    <div class="batch-file-actions">
+                                        <span class="batch-file-status" :class="item.status" v-text="batchStatusText(item.status)"></span>
+                                        <button v-if="batchFiles.length > 1" class="batch-file-delete" type="button" title="删除该视频"
+                                            :disabled="isAnalyzing" @click.stop="removeBatchFile(index)">
+                                            <i data-lucide="x"></i>
+                                        </button>
+                                    </div>
                                 </div>
                             </div>
 
@@ -591,6 +597,13 @@ export default {
 
         clearBatchFiles() {
             this.batchFiles = [];
+        },
+
+        removeBatchFile(index) {
+            if (this.batchFiles.length <= 1) {
+                return;
+            }
+            this.batchFiles.splice(index, 1);
         },
 
         async startAnalyze() {

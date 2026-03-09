@@ -450,10 +450,41 @@ body::after {
     white-space: nowrap;
 }
 
+.batch-file-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
 .batch-file-status {
     font-size: 0.75rem;
     padding: 0.25rem 0.5rem;
     border-radius: 1rem;
+}
+
+.batch-file-delete {
+    width: 1.75rem;
+    height: 1.75rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--border);
+    border-radius: 0.4rem;
+    background: transparent;
+    color: var(--muted-foreground);
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.batch-file-delete:hover {
+    border-color: oklch(0.62 0.18 27);
+    color: oklch(0.58 0.2 27);
+    background: oklch(0.97 0.03 27);
+}
+
+.batch-file-delete:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
 }
 
 .batch-file-status.success {
