@@ -35,6 +35,8 @@
 5. 下载单个或批量结果（ZIP / Markdown / PDF）📦  
 6. 自动写入历史记录，支持后续回看与复用 🗂️  
 
+![d589ac7c54320c42f25a0a944fd3fe69](https://github.com/user-attachments/assets/81ad86a9-cad1-4a70-922b-fda455f8f77d)
+
 ### 处理流程（系统视角）
 
 ```mermaid
