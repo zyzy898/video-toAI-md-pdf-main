@@ -177,7 +177,7 @@ npm run build
 npm run preview
 python app.py
 ```
-##  致谢🙏
+## 🙏 致谢
 
 感谢浩嵐传媒 荘总 的大力支持
 
